@@ -1,16 +1,16 @@
 {
   "name": "odbc",
-  "description": "unixodbc bindings for node",
-  "version": "2.4.7",
-  "homepage": "http://github.com/markdirish/node-odbc/",
+  "description": "unixodbc bindings for node with UTF8 support from MS SQL Server Driver",
+  "version": "0.0.1",
+  "homepage": "http://github.com/lvoinea/node-odbc/",
   "main": "lib/odbc.js",
   "types": "lib/odbc.d.ts",
   "repository": {
     "type": "git",
-    "url": "git://github.com/markdirish/node-odbc.git"
+    "url": "git://github.com/lvoinea/node-odbc.git"
   },
   "bugs": {
-    "url": "https://github.com/markdirish/node-odbc/issues"
+    "url": "https://github.com/lvoinea/node-odbc/issues"
   },
   "contributors": [
     {
@@ -35,7 +35,12 @@
   },
   "scripts": {
     "install": "node-pre-gyp install --fallback-to-build",
-    "test": "mocha --slow 5000 --timeout 30000"
+    "test": "mocha --slow 5000 --timeout 30000",
+    "clean": "node-pre-gyp clean",
+    "build": "node-pre-gyp build",
+    "rebuild": "node-pre-gyp rebuild",
+    "package": "node-pre-gyp package",
+    "publish": "npm run package && node-pre-gyp-github publish"
   },
   "dependencies": {
     "@mapbox/node-pre-gyp": "^1.0.5",
@@ -44,6 +49,7 @@
   },
   "gypfile": true,
   "devDependencies": {
+    "@mathisloge/node-pre-gyp-github": "^1.0.9",
     "dotenv": "^6.2.0",
     "eslint": "^8.11.0",
     "eslint-config-airbnb-base": "^15.0.0",
@@ -53,7 +59,8 @@
   "binary": {
     "module_name": "odbc",
     "module_path": "./lib/bindings/napi-v{napi_build_version}",
-    "host": "https://github.com/markdirish/node-odbc/releases/download/v{version}",
+    "remote_path": "v{version}",
+    "host": "https://github.com/lvoinea/node-odbc/releases/download",
     "package_name": "{name}-v{version}-{platform}-{arch}-napi-v{napi_build_version}.tar.gz",
     "napi_versions": [
       3
