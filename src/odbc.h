@@ -325,6 +325,8 @@ class ODBC {
     static SQLTCHAR* NapiStringToSQLTCHAR(Napi::String string);
 
     static void StoreBindValues(Napi::Array *values, Parameter **parameters);
+    static void StoreBulkValues(Napi::Array *napiTable, std::vector<ColumnData *> &values);
+    static void StoreBulkValuesRow(Napi::Array *napiValues, ColumnData *values);
 
     static SQLRETURN DescribeParameters(SQLHSTMT hstmt, Parameter **parameters, SQLSMALLINT parameterCount);
     static SQLRETURN  BindParameters(SQLHSTMT hstmt, Parameter **parameters, SQLSMALLINT parameterCount);

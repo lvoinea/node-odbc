@@ -90,6 +90,14 @@ declare namespace odbc {
     query<T, O extends QueryOptions>(sql: string, options: O, callback: (error: NodeOdbcError, result: O extends CursorQueryOptions ? Cursor : Result<T>) => undefined): undefined;
     query<T, O extends QueryOptions>(sql: string, parameters: Array<number|string>, options: O): O extends CursorQueryOptions ? Promise<Cursor> : Promise<Result<T>>;
 
+    bulkInsert(
+      table: string,
+      columns: Array<string>, 
+      values: Array<Array<number|string>>, 
+      bufferSize: Number, 
+      callback: (error: NodeOdbcError, result: Result<unknown>)=> undefined
+      ): undefined;
+
     callProcedure(catalog: string, schema: string, name: string, callback: (error: NodeOdbcError, result: Result<unknown>) => undefined): undefined;
     callProcedure(catalog: string, schema: string, name: string, parameters: Array<number|string>, callback: (error: NodeOdbcError, result: Result<unknown>) => undefined): undefined;
 

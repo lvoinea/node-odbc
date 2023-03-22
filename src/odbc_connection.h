@@ -27,6 +27,7 @@ class ODBCConnection : public Napi::ObjectWrap<ODBCConnection> {
   friend class CloseAsyncWorker;
   friend class CreateStatementAsyncWorker;
   friend class QueryAsyncWorker;
+  friend class BulkInsertAsyncWorker;
   friend class BeginTransactionAsyncWorker;
   friend class EndTransactionAsyncWorker;
   friend class PrimaryKeysAsyncWorker;
@@ -64,6 +65,8 @@ class ODBCConnection : public Napi::ObjectWrap<ODBCConnection> {
   Napi::Value CreateStatement(const Napi::CallbackInfo& info);
   Napi::Value Query(const Napi::CallbackInfo& info);
   Napi::Value CallProcedure(const Napi::CallbackInfo& info);
+  Napi::Value BulkInsert(const Napi::CallbackInfo& info);
+
 
   Napi::Value BeginTransaction(const Napi::CallbackInfo& info);
   Napi::Value Commit(const Napi::CallbackInfo &info);

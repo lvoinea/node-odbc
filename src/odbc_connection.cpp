@@ -46,6 +46,7 @@ Napi::Object ODBCConnection::Init(Napi::Env env, Napi::Object exports) {
     InstanceMethod("close", &ODBCConnection::Close),
     InstanceMethod("createStatement", &ODBCConnection::CreateStatement),
     InstanceMethod("query", &ODBCConnection::Query),
+    InstanceMethod("bulkInsert", &ODBCConnection::BulkInsert),
     InstanceMethod("beginTransaction", &ODBCConnection::BeginTransaction),
     InstanceMethod("commit", &ODBCConnection::Commit),
     InstanceMethod("rollback", &ODBCConnection::Rollback),
@@ -1238,6 +1239,195 @@ void ODBCConnection::ParametersToArray(Napi::Reference<Napi::Array> *napiParamet
   }
 }
 
+/******************************************************************************
+ ******************************** BulkInsert **********************************
+ *****************************************************************************/
+// BulkInsertAsyncWorker, used by BulkInsert function (see below)
+
+class BulkInsertAsyncWorker : public ODBCAsyncWorker {
+
+  public:
+
+    BulkInsertAsyncWorker(
+      ODBCConnection *odbcConnectionObject,      
+      StatementData  *data,
+      std::string table,
+      std::vector<std::string> &columns,
+      std::vector<ColumnData*> &values,
+      int bufferSize,
+      Napi::Function& callback):
+        ODBCAsyncWorker(callback),
+        table(table), 
+        bufferSize(bufferSize), 
+        odbcConnectionObject(odbcConnectionObject), 
+        data(data)
+      {
+          this->columns = std::move(columns);
+          this->values = std::move(values);
+          nCols = columns.size();
+      }
+
+  private:
+    ODBCConnection *odbcConnectionObject;
+    StatementData  *data;
+    std::string table;
+    std::vector<std::string> columns;
+    std::vector<ColumnData*> values;
+    int bufferSize;
+    int nCols;
+
+    ~BulkInsertAsyncWorker() { 
+      for (size_t i = 0; i < values.size(); i++) {
+        for (size_t j=0; j<nCols; j++) {
+          ColumnData* value = &values[i][j];
+          if (value->size > 0) {
+            delete[] value->char_data;
+          }
+        }
+        delete[] values[i];  
+      }
+      values.clear();
+    }
+
+    void Execute() {
+
+      SQLRETURN return_code;
+
+      // allocate a new statement handle
+      uv_mutex_lock(&ODBC::g_odbcMutex);
+      if (odbcConnectionObject->hDBC == SQL_NULL_HANDLE) {
+        uv_mutex_unlock(&ODBC::g_odbcMutex);
+        SetError("[odbc] Database connection handle was no longer valid. Cannot run a query after closing the connection.");
+        return;
+      } else {
+        return_code = SQLAllocHandle(
+          SQL_HANDLE_STMT,            // HandleType
+          odbcConnectionObject->hDBC, // InputHandle
+          &(data->hstmt)              // OutputHandlePtr
+        );
+        uv_mutex_unlock(&ODBC::g_odbcMutex);
+        if (!SQL_SUCCEEDED(return_code)) {
+          this->errors = GetODBCErrors(SQL_HANDLE_DBC, odbcConnectionObject->hDBC);
+          SetError("[odbc] Error allocating a handle to run the SQL statement\0");
+          return;
+        }
+
+        // Execute initial query
+        // TODO: create query on provided columns
+        return_code = SQLExecDirect(data->hstmt, (SQLCHAR*)"SELECT TOP 1 P_PARTKEY, P_NAME FROM PART", SQL_NTS);
+        if (!SQL_SUCCEEDED(return_code) && return_code != SQL_NO_DATA) {
+          this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
+          SetError("[odbc] Error executing the sql statement\0");
+          return;
+        }
+
+
+        //printf("Statement: %s\n", sql);
+
+        // TODO: bind the buffers
+        // TODO: iterate on the input value
+        //    TODO: copy the values over to the buffer
+        //    TODO: run the SQLBulkOperations 
+
+      }
+
+    }
+
+    void OnOK() {
+
+      Napi::Env env = Env();
+      Napi::HandleScope scope(env);
+
+      printf("Finished.\n");
+
+      std::vector<napi_value> callbackArguments;
+      callbackArguments.push_back(env.Null());
+      Callback().Call(callbackArguments);
+    }
+};
+
+Napi::Value  ODBCConnection::BulkInsert(const Napi::CallbackInfo& info) {
+
+  Napi::Env env = info.Env();
+  Napi::HandleScope scope(env);
+
+  StatementData *data                      = new StatementData();
+                 data->henv                = this->hENV;
+                 data->hdbc                = this->hDBC;
+                 data->fetch_array         = this->connectionOptions.fetchArray;
+                 data->maxColumnNameLength = this->getInfoResults.max_column_name_length;
+                 data->get_data_supports   = this->getInfoResults.sql_get_data_supports;
+  Napi::Array    napiParameterArray = Napi::Array::New(env);
+  size_t         argument_count     = info.Length();
+
+  // For the C++ node-addon-api code, all of the function signatures must
+  // include a callback function as the final parameter because we need to
+  // have a function to pass to the AsyncWorker as a Callback. The JavaScript
+  // wrapper functions enforce the correct number of arguments, so just need
+  // to check for null/undefined in a given spot.
+  if
+  (
+    argument_count != 5 ||
+    (
+      info[0].IsNull() ||
+      info[0].IsUndefined() ||
+      !info[0].IsString()
+    ) ||
+    (
+      info[1].IsNull() ||
+      info[1].IsUndefined() ||
+      !info[1].IsArray()
+    ) ||
+    (
+      info[2].IsNull()      ||
+      info[2].IsUndefined() ||
+      !info[2].IsArray()      
+    ) ||
+    (      
+      info[3].IsNull() ||
+      info[3].IsUndefined() ||
+      !info[3].IsNumber()
+    ) ||
+    (
+      info[4].IsNull() ||
+      info[4].IsUndefined() ||
+      !info[4].IsFunction()
+    )        
+  )
+  {
+    Napi::TypeError::New(env, "[node-odbc]: Wrong function signature in call to Connection.bulkInsert(table: string, columns: array, values:array, bufferSize: int, callback: function).").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+
+  // Prepare input for consumption within the worker
+  std::string table = info[0].ToString().Utf8Value();
+  Napi::Array napiColumns = info[1].As<Napi::Array>();
+  std::vector<std::string> columns;
+  int nColumns = napiColumns.Length();
+  for(int i=0; i<nColumns; i++){
+    columns.push_back(napiColumns.Get(i).ToString().Utf8Value());
+  }
+  Napi::Array napiValues = info[2].As<Napi::Array>();
+  int bufferSize = info[3].ToNumber().Int32Value();
+  Napi::Function callback = info[4].As<Napi::Function>();
+
+  // Unpack values
+  // This is needed as the values need to be accessible inside the worker Execute 
+  // method. However, NAPI functions are not available in there, so data needs to
+  // be transformed into appropriate C++ strctures before that.
+  std::vector<ColumnData*> values;
+  ODBC::StoreBulkValues(&napiValues, values);
+
+  // Create the AsyncWorker and queue the work
+  BulkInsertAsyncWorker *worker;
+  worker = new BulkInsertAsyncWorker(this, data, table, columns, values, bufferSize, callback);
+  worker->Queue();
+
+  // Free allocated resources
+  // Done in the worker
+  
+  return env.Undefined();
+}
 
 /******************************************************************************
  ***************************** CALL PROCEDURE *********************************
@@ -3296,7 +3486,7 @@ bind_buffers
     data->bound_columns[i].length_or_indicator_array =
       new SQLLEN[data->fetch_size]();
 
-    return_code = 
+    return_code =
     SQLDescribeCol
     (
       data->hstmt,                   // StatementHandle

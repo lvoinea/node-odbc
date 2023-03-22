@@ -720,6 +720,86 @@ void ODBC::StoreBindValues(Napi::Array *values, Parameter **parameters) {
   }
 }
 
+void ODBC::StoreBulkValues(Napi::Array *napiTable, std::vector<ColumnData *> &values){
+  
+  uint32_t numRows = napiTable->Length();
+  
+  for (uint32_t i = 0; i < numRows; i++) {
+    Napi::Array napiRow = napiTable->Get(i).As<Napi::Array>();
+    ColumnData *row = new ColumnData[napiRow.Length()]();
+    ODBC::StoreBulkValuesRow(&napiRow, row);
+    values.push_back(row);
+  }
+
+}
+
+void ODBC::StoreBulkValuesRow(Napi::Array *napiValues, ColumnData *values){
+  
+  uint32_t numValues = napiValues->Length();
+
+  for (uint32_t i = 0; i < numValues; i++) {
+
+    Napi::Value napiValue = napiValues->Get(i);
+    ColumnData *value = &values[i];
+
+    if(napiValue.IsNull()) {
+      value->bind_type = SQL_C_DEFAULT;
+      value->size = SQL_NULL_DATA;      
+#if NAPI_VERSION > 5
+    } else if (napiValue.IsBigInt()) {
+      // TODO: need to check for signed/unsigned?
+      bool lossless = true;
+      value->bind_type = SQL_C_SBIGINT;
+      value->ParameterValuePtr = new SQLBIGINT(napiValue.As<Napi::BigInt>().Int64Value(&lossless));
+#endif
+    } 
+    else if (napiValue.IsNumber()) {
+      double double_val = napiValue.As<Napi::Number>().DoubleValue();
+      int64_t int_val = napiValue.As<Napi::Number>().Int64Value();
+      if (double_val == int_val) {
+        value->bind_type = SQL_C_SBIGINT;
+        value->bigint_data = napiValue.As<Napi::Number>().Int64Value();
+      } else {
+        value->bind_type = SQL_C_DOUBLE;
+        value->double_data = napiValue.As<Napi::Number>().DoubleValue();
+      }
+    } 
+    else if (napiValue.IsBoolean()) {
+      value->bind_type = SQL_C_UTINYINT;
+      value->tinyint_data = napiValue.As<Napi::Boolean>().Value();
+    } 
+    else if (napiValue.IsBuffer()) {
+      Napi::Buffer<SQLCHAR> bufferValue = napiValue.As<Napi::Buffer<SQLCHAR>>();
+      value->bind_type = SQL_C_BINARY;
+      value->size = bufferValue.Length();
+      value->char_data = new SQLCHAR[value->size]();      
+      memcpy((SQLCHAR *) value->char_data, bufferValue.Data(), value->size);
+    } 
+    else if (napiValue.IsArrayBuffer()) {
+      Napi::ArrayBuffer arrayBufferValue = napiValue.As<Napi::ArrayBuffer>();
+      value->bind_type = SQL_C_BINARY;
+      value->size = arrayBufferValue.ByteLength();
+      value->char_data = new SQLCHAR[value->size];      
+      memcpy((SQLCHAR *) value->char_data, arrayBufferValue.Data(), value->size);
+    } 
+    else if (napiValue.IsString()) {
+      // Napi::String string = napiValue.ToString();
+      // value->bind_type = SQL_C_WCHAR;
+      // value->size = (string.Utf16Value().length() + 1) * sizeof(SQLWCHAR);
+      // value->wchar_data = new SQLWCHAR[value->size];      
+      // memcpy((SQLWCHAR*) value->wchar_data, string.Utf16Value().c_str(), value->size);
+      Napi::String string = napiValue.ToString();
+      value->bind_type = SQL_C_CHAR;
+      value->size = (string.Utf8Value().length() + 1);
+      value->char_data = new SQLCHAR[value->size]();      
+      memcpy((SQLCHAR*) value->char_data, string.Utf8Value().c_str(), value->size);
+    } 
+    else {
+      // TODO: Throw error, don't support other types
+    }
+  }
+}
+
 SQLRETURN ODBC::DescribeParameters(SQLHSTMT hstmt, Parameter **parameters, SQLSMALLINT parameterCount) {
 
   SQLRETURN return_code = SQL_SUCCESS; // if no parameters, will return SQL_SUCCESS
