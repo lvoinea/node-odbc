@@ -183,9 +183,9 @@ void ODBCAsyncWorker::OnError(const Napi::Error &e) {
     (
       Napi::String::New(env, STATE),
       #ifdef UNICODE
-      Napi::String::New(env, (odbcError.state != NULL) ? (const char16_t*)odbcError.state : (const char16_t*)L"")
+      Napi::String::New(env, (odbcError.state[0] != NO_STATE_TEXT) ? (const char16_t*)odbcError.state : (const char16_t*)L"")
       #else
-      Napi::String::New(env, (odbcError.state != NULL) ? (const char*)odbcError.state : "")
+      Napi::String::New(env, (odbcError.state[0] != NO_STATE_TEXT) ? (const char*)odbcError.state : "")
       #endif
     );
 

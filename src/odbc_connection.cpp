@@ -20,6 +20,7 @@
 #include "odbc_connection.h"
 #include "odbc_statement.h"
 #include "odbc_cursor.h"
+#include "utils.h"
 
 #define MAX_UTF8_BYTES 4
 
@@ -846,13 +847,31 @@ class QueryAsyncWorker : public ODBCAsyncWorker {
         }
         // querying without parameters, can just use SQLExecDirect
         else {
-          return_code =
-          SQLExecDirect
-          (
-            data->hstmt,
-            data->sql,
-            SQL_NTS
-          );
+          if (is_utf8_locale()) {
+
+            size_t code_points = count_utf8_code_points((const char*)data->sql);            
+            WCHAR sql_u16[code_points];    
+            utf8_to_utf16((char*)data->sql, (char*)sql_u16);       
+
+            return_code =
+            SQLExecDirectW
+            (
+              data->hstmt,
+              sql_u16,
+              code_points
+            );
+          }
+          else {
+            return_code =
+            SQLExecDirect
+            (
+              data->hstmt,
+              data->sql,
+              SQL_NTS
+            );
+          }
+
+
           if (!SQL_SUCCEEDED(return_code) && return_code != SQL_NO_DATA) {
             this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
             SetError("[odbc] Error executing the sql statement\0");
@@ -2726,19 +2745,64 @@ class ColumnsAsyncWorker : public ODBCAsyncWorker {
         1
       );
 
-      return_code =
-      SQLColumns
-      (
-        data->hstmt,   // StatementHandle
-        data->catalog, // CatalogName
-        SQL_NTS,       // NameLength1
-        data->schema,  // SchemaName
-        SQL_NTS,       // NameLength2
-        data->table,   // TableName
-        SQL_NTS,       // NameLength3
-        data->column,  // ColumnName
-        SQL_NTS        // NameLength4
-      );
+      if (is_utf8_locale()) {
+
+        // Catalog
+        size_t len_catalog = 0;
+        WCHAR* catalog_u16 = nullptr;
+        if (data->catalog != nullptr) {
+          len_catalog = count_utf8_code_points((const char*)data->catalog);        
+          catalog_u16 = new WCHAR[len_catalog];
+          utf8_to_utf16((char*)data->catalog, (char*)catalog_u16);       
+        }        
+
+        // Schema
+        size_t len_schema = count_utf8_code_points((const char*)data->schema);            
+        WCHAR schema_u16[len_schema];    
+        utf8_to_utf16((char*)data->schema, (char*)schema_u16);
+
+        // Table
+        size_t len_table = count_utf8_code_points((const char*)data->table);            
+        WCHAR table_u16[len_table];    
+        utf8_to_utf16((char*)data->table, (char*)table_u16);
+
+        // Column
+        size_t len_column = 0;
+        WCHAR* column_u16 = nullptr;
+        if (data->column != nullptr) {
+            len_column = count_utf8_code_points((const char*)data->column);
+            catalog_u16 = new WCHAR[len_column];
+            utf8_to_utf16((char*)data->column, (char*)column_u16);
+        }
+
+        SQLColumnsW
+        (
+          data->hstmt,  // StatementHandle
+          catalog_u16,  // CatalogName
+          len_catalog,  // NameLength1
+          schema_u16,   // SchemaName
+          len_schema,   // NameLength2
+          table_u16,    // TableName
+          len_table,    // NameLength3
+          column_u16,   // ColumnName
+          len_column    // NameLength4
+        );
+      }
+      else {
+        return_code =
+        SQLColumns
+        (
+          data->hstmt,   // StatementHandle
+          data->catalog, // CatalogName
+          SQL_NTS,       // NameLength1
+          data->schema,  // SchemaName
+          SQL_NTS,       // NameLength2
+          data->table,   // TableName
+          SQL_NTS,       // NameLength3
+          data->column,  // ColumnName
+          SQL_NTS        // NameLength4
+        );
+      }
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error getting column information\0");
@@ -3117,6 +3181,7 @@ Napi::Value ODBCConnection::Rollback(const Napi::CallbackInfo &info) {
   return env.Undefined();
 }
 
+//--------------------------------------------------------------------------
 SQLRETURN
 prepare_for_fetch
 (
@@ -3151,7 +3216,7 @@ prepare_for_fetch
   return return_code;
 }
 
-
+//--------------------------------------------------------------------------
 SQLRETURN
 bind_buffers
 (
@@ -3289,26 +3354,50 @@ bind_buffers
   for (int i = 0; i < data->column_count; i++)
   {
     Column *column = new Column();
-    column->ColumnName = new SQLTCHAR[data->maxColumnNameLength + 1]();
+    // Need to reserve enough memory for the wost case
+    column->ColumnName = new SQLTCHAR[(data->maxColumnNameLength)*2 + 1]();
 
     // TODO: Could just allocate one large SQLLEN buffer that was of size
     // column_count * fetch_size, then just do the pointer arithmetic for it..
     data->bound_columns[i].length_or_indicator_array =
       new SQLLEN[data->fetch_size]();
 
-    return_code = 
-    SQLDescribeCol
-    (
-      data->hstmt,                   // StatementHandle
-      i + 1,                         // ColumnNumber
-      column->ColumnName,            // ColumnName
-      data->maxColumnNameLength + 1, // BufferLength
-      &column->NameLength,           // NameLengthPtr
-      &column->DataType,             // DataTypePtr
-      &column->ColumnSize,           // ColumnSizePtr
-      &column->DecimalDigits,        // DecimalDigitsPtr
-      &column->Nullable              // NullablePtr
-    );
+    if (is_utf8_locale()) {
+
+      WCHAR column_u16[data->maxColumnNameLength];    
+
+      return_code =
+      SQLDescribeColW
+      (
+        data->hstmt,                   // StatementHandle
+        i + 1,                         // ColumnNumber
+        column_u16,                    // ColumnName (UTF-16LE)
+        data->maxColumnNameLength,     // BufferLength
+        &column->NameLength,           // NameLengthPtr
+        &column->DataType,             // DataTypePtr
+        &column->ColumnSize,           // ColumnSizePtr
+        &column->DecimalDigits,        // DecimalDigitsPtr
+        &column->Nullable              // NullablePtr
+      );
+
+      utf16_to_utf8((char*)column_u16, (char*)column->ColumnName, column->NameLength);
+    }
+    else {
+      return_code = 
+      SQLDescribeCol
+      (
+        data->hstmt,                   // StatementHandle
+        i + 1,                         // ColumnNumber
+        column->ColumnName,            // ColumnName
+        data->maxColumnNameLength + 1, // BufferLength (+1 for the 0 terminator)
+        &column->NameLength,           // NameLengthPtr
+        &column->DataType,             // DataTypePtr
+        &column->ColumnSize,           // ColumnSizePtr
+        &column->DecimalDigits,        // DecimalDigitsPtr
+        &column->Nullable              // NullablePtr
+      );
+    }
+
     if (!SQL_SUCCEEDED(return_code)) {
       return return_code;
     }
@@ -3511,7 +3600,7 @@ bind_buffers
   }
   return return_code;
 }
-
+//--------------------------------------------------------------------------
 SQLRETURN
 fetch_and_store
 (
@@ -3953,6 +4042,7 @@ fetch_and_store
   return return_code;
 }
 
+//--------------------------------------------------------------------------
 SQLRETURN
 fetch_all_and_store
 (
@@ -3992,6 +4082,7 @@ fetch_all_and_store
   return return_code;
 }
 
+//--------------------------------------------------------------------------
 // All of data has been loaded into data->storedRows. Have to take the data
 // stored in there and convert it it into JavaScript to be given to the
 // Node.js runtime.
