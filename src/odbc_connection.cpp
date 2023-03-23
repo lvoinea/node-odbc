@@ -16,6 +16,8 @@
   OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 
+#include <sstream>
+
 #include "odbc.h"
 #include "odbc_connection.h"
 #include "odbc_statement.h"
@@ -847,18 +849,23 @@ class QueryAsyncWorker : public ODBCAsyncWorker {
         }
         // querying without parameters, can just use SQLExecDirect
         else {
-          if (is_utf8_locale()) {
+          if (is_utf8_locale()) {            
+            // Assume the application handles UNICODE
 
-            size_t code_points = count_utf8_code_points((const char*)data->sql);            
-            WCHAR sql_u16[code_points];    
-            utf8_to_utf16((char*)data->sql, (char*)sql_u16);       
+            size_t len_sql_ucs2 = count_utf8_code_points((const char*)data->sql);
+            WCHAR sql_ucs2[len_sql_ucs2]; 
+            int conversion_result = utf8_to_ucs2((char*)data->sql, (char*)sql_ucs2);            
+            if (conversion_result <0) {
+              SetError("[node-odbc] Query not accepted (not a valid UCS-2 string)\0");
+              return;
+            }
 
             return_code =
             SQLExecDirectW
             (
               data->hstmt,
-              sql_u16,
-              code_points
+              sql_ucs2,
+              len_sql_ucs2
             );
           }
           else {
@@ -2747,46 +2754,90 @@ class ColumnsAsyncWorker : public ODBCAsyncWorker {
 
       if (is_utf8_locale()) {
 
+        bool parameter_check = true;
+
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
         // Catalog
-        size_t len_catalog = 0;
-        WCHAR* catalog_u16 = nullptr;
+        size_t len_catalog_ucs2 = 0;
+        WCHAR* catalog_ucs2 = nullptr;
         if (data->catalog != nullptr) {
-          len_catalog = count_utf8_code_points((const char*)data->catalog);        
-          catalog_u16 = new WCHAR[len_catalog];
-          utf8_to_utf16((char*)data->catalog, (char*)catalog_u16);       
+          len_catalog_ucs2 = count_utf8_code_points((const char*)data->catalog);
+          catalog_ucs2 = new WCHAR[len_catalog_ucs2];
+          int conversion_result = utf8_to_ucs2((char*)data->catalog, (char*)catalog_ucs2);
+          if (conversion_result <0) {
+            ss <<  "Catalog name not accepted (not a valid UCS-2 string); ";
+            parameter_check = false;
+          }
         }        
 
         // Schema
-        size_t len_schema = count_utf8_code_points((const char*)data->schema);            
-        WCHAR schema_u16[len_schema];    
-        utf8_to_utf16((char*)data->schema, (char*)schema_u16);
+        size_t len_schema_ucs2 = 0;
+        WCHAR* schema_ucs2 = nullptr;
+        if (data->schema != nullptr) {
+          len_schema_ucs2 = count_utf8_code_points((const char*)data->schema);
+          schema_ucs2 = new WCHAR[len_schema_ucs2];
+          int conversion_result = utf8_to_ucs2((char*)data->schema, (char*)schema_ucs2);
+          if (conversion_result <0) {
+            ss <<  "Schema name not accepted (not a valid UCS-2 string); ";
+            parameter_check = false;
+          }
+        }
+        
 
         // Table
-        size_t len_table = count_utf8_code_points((const char*)data->table);            
-        WCHAR table_u16[len_table];    
-        utf8_to_utf16((char*)data->table, (char*)table_u16);
+        size_t len_table_ucs2 = 0;
+        WCHAR* table_ucs2 = nullptr;
+        if (data->table != nullptr){
+          len_table_ucs2 = count_utf8_code_points((const char*)data->table);
+          table_ucs2 = new WCHAR[len_table_ucs2];
+          int conversion_result = utf8_to_ucs2((char*)data->table, (char*)table_ucs2);
+          if (conversion_result <0) {
+            ss << "Table name not accepted (not a valid UCS-2 string); ";
+            parameter_check = false;
+          }
+        }        
 
         // Column
-        size_t len_column = 0;
-        WCHAR* column_u16 = nullptr;
+        size_t len_column_ucs2 = 0;
+        WCHAR* column_ucs2 = nullptr;
         if (data->column != nullptr) {
-            len_column = count_utf8_code_points((const char*)data->column);
-            catalog_u16 = new WCHAR[len_column];
-            utf8_to_utf16((char*)data->column, (char*)column_u16);
+          len_column_ucs2 = count_utf8_code_points((const char*)data->column);
+          column_ucs2 = new WCHAR[len_column_ucs2]; 
+          int conversion_result = utf8_to_ucs2((char*)data->column, (char*)column_ucs2);
+          if (conversion_result <0) {
+            ss << "Column name not accepted (not a valid UCS-2 string); ";
+            parameter_check = false;
+          }
         }
 
-        SQLColumnsW
-        (
-          data->hstmt,  // StatementHandle
-          catalog_u16,  // CatalogName
-          len_catalog,  // NameLength1
-          schema_u16,   // SchemaName
-          len_schema,   // NameLength2
-          table_u16,    // TableName
-          len_table,    // NameLength3
-          column_u16,   // ColumnName
-          len_column    // NameLength4
-        );
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          SQLColumnsW
+          (
+            data->hstmt,        // StatementHandle
+            catalog_ucs2,       // CatalogName
+            len_catalog_ucs2,   // CatalogName length
+            schema_ucs2,        // SchemaName
+            len_schema_ucs2,    // SchemaName length
+            table_ucs2,         // TableName
+            len_table_ucs2,     // TableName length
+            column_ucs2,        // ColumnName
+            len_column_ucs2     // ColumnName length
+          );
+        }
+
+        // Clean-up
+        if (catalog_ucs2 != nullptr) delete[] catalog_ucs2;
+        if (schema_ucs2 != nullptr) delete[] schema_ucs2;
+        if (table_ucs2 != nullptr) delete[] table_ucs2;
+        if (column_ucs2 != nullptr) delete[] column_ucs2;
+
+        if (!parameter_check) {
+          SetError(ss.str());
+          return;
+        }
       }
       else {
         return_code =
@@ -3364,14 +3415,14 @@ bind_buffers
 
     if (is_utf8_locale()) {
 
-      WCHAR column_u16[data->maxColumnNameLength];    
+      WCHAR column_ucs2[data->maxColumnNameLength];    
 
       return_code =
       SQLDescribeColW
       (
         data->hstmt,                   // StatementHandle
         i + 1,                         // ColumnNumber
-        column_u16,                    // ColumnName (UTF-16LE)
+        column_ucs2,                   // ColumnName (UCS-2LE)
         data->maxColumnNameLength,     // BufferLength
         &column->NameLength,           // NameLengthPtr
         &column->DataType,             // DataTypePtr
@@ -3380,7 +3431,7 @@ bind_buffers
         &column->Nullable              // NullablePtr
       );
 
-      utf16_to_utf8((char*)column_u16, (char*)column->ColumnName, column->NameLength);
+      ucs2_to_utf8((char*)column_ucs2, (char*)column->ColumnName, column->NameLength);
     }
     else {
       return_code = 

@@ -36,6 +36,7 @@
   "scripts": {
     "install": "node-pre-gyp install --fallback-to-build",
     "test": "mocha --slow 5000 --timeout 30000",
+    "test-utf8": "mocha test/utf8 --slow 5000 --timeout 30000",
     "clean": "node-pre-gyp clean",
     "build": "node-pre-gyp build",
     "rebuild": "node-pre-gyp rebuild",
