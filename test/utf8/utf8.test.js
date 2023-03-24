@@ -57,7 +57,7 @@ describe('UTF8:', () => {
     await connection.close();    
   });
 
-  describe('...with query', () => {
+  describe('...with connection.query()', () => {
     it('- should accept UTF8 value literals.', async () => {       
       statement = `insert into ${global.table} ([Col Ω], [Col α]) values (N'an Ω', 'other')`
       result = await connection.query(statement);
@@ -91,9 +91,17 @@ describe('UTF8:', () => {
       result = await connection.query(statement);
       assert.deepEqual(result[0], { 'Col Ω': 'an Ω', 'Col α': 'other' });
     });
-  });
 
-  describe('...with columns', () => {
+    it('- should accept UTF8 literals when prepared via query parameters', async () => {
+      statement = `insert into ${global.table} ([Col Ω], [Col α]) values (?, ?)`
+      result = await connection.query(statement, ['Ω prepare','other']);
+      assert.equal(result.statement, statement);
+      assert.deepEqual(result.parameters, [ 'Ω prepare', 'other' ]);
+    });
+
+  });  
+
+  describe('...with connection.columns()', () => {
 
     it('- should accept UTF8 literals', async () => {      
       result = await connection.columns(
@@ -124,8 +132,8 @@ describe('UTF8:', () => {
     });
   });
 
-  describe('...with tables', () => {
-    it('- should accept UTF8 literals', async () => {      
+  describe('...with connection.tables()', () => {
+    it('- should accept UTF8 literals', async () => {
       result = await connection.tables(
         process.env.DB_NAME, 
         process.env.DB_SCHEMA,
@@ -155,6 +163,22 @@ describe('UTF8:', () => {
         '😀',
         '😀',
         null));
+    });
+
+  });
+
+  describe('...with statement.prepare()', () => {
+
+    it('- should accept UTF8 literals', async () => {
+      statement = await connection.createStatement();
+      await assert.doesNotReject(async() => statement.prepare(
+        "insert into ΩDBC.dbo.Tαble2 ([Col Ω], [Col α]) values (?, ?)"));
+    });
+
+    it('- should not accept UNICODE literal beyond UCS-2 (e.g., emoji 😀)', async () => {      
+      statement = await connection.createStatement();
+      await assert.rejects(async() => statement.prepare(
+        "insert into ΩDBC.dbo.Tαble2 ([Col Ω], [Col 😀]) values (?, ?)"));
     });
 
   });
