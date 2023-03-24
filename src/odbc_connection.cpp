@@ -851,22 +851,20 @@ class QueryAsyncWorker : public ODBCAsyncWorker {
         else {
           if (is_utf8_locale()) {            
             // Assume the application handles UNICODE
-
-            size_t len_sql_ucs2 = count_utf8_code_points((const char*)data->sql);
-            WCHAR sql_ucs2[len_sql_ucs2]; 
-            int conversion_result = utf8_to_ucs2((char*)data->sql, (char*)sql_ucs2);            
-            if (conversion_result <0) {
-              SetError("[node-odbc] Query not accepted (not a valid UCS-2 string)\0");
+                        
+            Ucs2Str sql = utf8_to_ucs2((char*)data->sql);
+            if (!sql.valid) {
+              SetError((std::string("[node-odbc] Query not accepted: ") + sql.error).c_str());
               return;
             }
-
             return_code =
             SQLExecDirectW
             (
               data->hstmt,
-              sql_ucs2,
-              len_sql_ucs2
+              sql.str.get(),
+              sql.length
             );
+            
           }
           else {
             return_code =
@@ -877,7 +875,6 @@ class QueryAsyncWorker : public ODBCAsyncWorker {
               SQL_NTS
             );
           }
-
 
           if (!SQL_SUCCEEDED(return_code) && return_code != SQL_NO_DATA) {
             this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
@@ -2754,62 +2751,36 @@ class ColumnsAsyncWorker : public ODBCAsyncWorker {
 
       if (is_utf8_locale()) {
 
-        bool parameter_check = true;
-
+        bool parameter_check = true;        
         std::stringstream ss;
         ss << "[node-odbc] ";
 
         // Catalog
-        size_t len_catalog_ucs2 = 0;
-        WCHAR* catalog_ucs2 = nullptr;
-        if (data->catalog != nullptr) {
-          len_catalog_ucs2 = count_utf8_code_points((const char*)data->catalog);
-          catalog_ucs2 = new WCHAR[len_catalog_ucs2];
-          int conversion_result = utf8_to_ucs2((char*)data->catalog, (char*)catalog_ucs2);
-          if (conversion_result <0) {
-            ss <<  "Catalog name not accepted (not a valid UCS-2 string); ";
-            parameter_check = false;
-          }
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
         }        
 
         // Schema
-        size_t len_schema_ucs2 = 0;
-        WCHAR* schema_ucs2 = nullptr;
-        if (data->schema != nullptr) {
-          len_schema_ucs2 = count_utf8_code_points((const char*)data->schema);
-          schema_ucs2 = new WCHAR[len_schema_ucs2];
-          int conversion_result = utf8_to_ucs2((char*)data->schema, (char*)schema_ucs2);
-          if (conversion_result <0) {
-            ss <<  "Schema name not accepted (not a valid UCS-2 string); ";
-            parameter_check = false;
-          }
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
         }
-        
 
         // Table
-        size_t len_table_ucs2 = 0;
-        WCHAR* table_ucs2 = nullptr;
-        if (data->table != nullptr){
-          len_table_ucs2 = count_utf8_code_points((const char*)data->table);
-          table_ucs2 = new WCHAR[len_table_ucs2];
-          int conversion_result = utf8_to_ucs2((char*)data->table, (char*)table_ucs2);
-          if (conversion_result <0) {
-            ss << "Table name not accepted (not a valid UCS-2 string); ";
-            parameter_check = false;
-          }
-        }        
+        Ucs2Str table = utf8_to_ucs2((char*)data->table);
+        if (!table.valid) {
+          ss << "Table name not accepted: " << table.error;
+          parameter_check = false;
+        }
 
         // Column
-        size_t len_column_ucs2 = 0;
-        WCHAR* column_ucs2 = nullptr;
-        if (data->column != nullptr) {
-          len_column_ucs2 = count_utf8_code_points((const char*)data->column);
-          column_ucs2 = new WCHAR[len_column_ucs2]; 
-          int conversion_result = utf8_to_ucs2((char*)data->column, (char*)column_ucs2);
-          if (conversion_result <0) {
-            ss << "Column name not accepted (not a valid UCS-2 string); ";
-            parameter_check = false;
-          }
+        Ucs2Str column = utf8_to_ucs2((char*)data->column);
+        if (!column.valid) {
+          ss << "Column name not accepted: " << column.error;
+          parameter_check = false;
         }
 
         if (parameter_check){
@@ -2817,27 +2788,20 @@ class ColumnsAsyncWorker : public ODBCAsyncWorker {
           SQLColumnsW
           (
             data->hstmt,        // StatementHandle
-            catalog_ucs2,       // CatalogName
-            len_catalog_ucs2,   // CatalogName length
-            schema_ucs2,        // SchemaName
-            len_schema_ucs2,    // SchemaName length
-            table_ucs2,         // TableName
-            len_table_ucs2,     // TableName length
-            column_ucs2,        // ColumnName
-            len_column_ucs2     // ColumnName length
+            catalog.str.get(),  // CatalogName
+            catalog.length,     // CatalogName length
+            schema.str.get(),   // SchemaName
+            schema.length,      // SchemaName length
+            table.str.get(),    // TableName
+            table.length,       // TableName length
+            column.str.get(),   // ColumnName
+            column.length       // ColumnName length
           );
-        }
-
-        // Clean-up
-        if (catalog_ucs2 != nullptr) delete[] catalog_ucs2;
-        if (schema_ucs2 != nullptr) delete[] schema_ucs2;
-        if (table_ucs2 != nullptr) delete[] table_ucs2;
-        if (column_ucs2 != nullptr) delete[] column_ucs2;
-
-        if (!parameter_check) {
+        } else {
           SetError(ss.str());
           return;
         }
+
       }
       else {
         return_code =

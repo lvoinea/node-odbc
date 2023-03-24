@@ -24,8 +24,7 @@ void display_buffer(const unsigned char* buffer, size_t size) {
     printf("\n");
 }
 
-int utf8_to_ucs2(char* inbuf, char* outbuf) {
-    // outbuf needs to be allocated by the caller
+Ucs2Str utf8_to_ucs2(char* inbuf) {
 
     // UNICODE suport in ODBC is limitted to UCS-2
     // https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/unicode?redirectedfrom=MSDN&view=sql-server-ver16
@@ -33,39 +32,52 @@ int utf8_to_ucs2(char* inbuf, char* outbuf) {
     // Source: https://www.ibm.com/docs/en/zos/2.2.0?topic=functions-iconv-code-conversion
     // WARNING: mind the reverse source/target parameters in iconv_open
 
+
+    Ucs2Str result { nullptr, 0, true, ""};    
+    if (inbuf != nullptr) {
+        result.length = count_utf8_code_points((const char*)inbuf);
+        result.str = std::unique_ptr<WCHAR[]>(new WCHAR[result.length]);        
+    } 
+    else {
+        return result;
+    }
+    
     char   *inptr;  // Pointer used for input buffer
     char   *outptr; // Pointer used for output buffer
 
     iconv_t cd;
     size_t inleft;  // number of bytes left in inbuf
     size_t outleft; // number of bytes left in outbuf
-    int rc;         
-
+    int rc;
 
     if ((cd = iconv_open("UCS-2LE", "UTF-8")) == (iconv_t)(-1)) {
-        fprintf(stderr, "Cannot open UCS-2 converter\n");
-        return -1;
+        result.valid = false;
+        result.error = "Cannot open UCS-2 converter. ";
+        return result;
+        
     }
 
     inleft = strlen(inbuf);
-    outleft = inleft*2; // Worst case approximation. Assumes the buffer can hold it.
+    outleft = result.length*2;  // In UCS-2 each code point is store in 2 bytes
     inptr = (char*)inbuf;
-    outptr = (char*)outbuf;
+    outptr = (char*)result.str.get();
 
     rc = iconv(cd, &inptr, &inleft, &outptr, &outleft);
     if (rc == -1) {
-        fprintf(stderr, "Error converting UTF-8 to UCS-2LE.\n");
+        result.valid = false;
+        result.error = "Error converting UTF-8 to UCS-2LE. ";
     }
     iconv_close(cd);
 
     // Verify conversion
     // This is needed as iconv does not report when it does character replacement
     // for characters that are not available in the destination format.
-    size_t out_len_ucs2 = (strlen(inbuf)*2-outleft)/2;   
+    
     char inbuf_rebuilt[strlen(inbuf)+1]; // Account for temination char
-    ucs2_to_utf8(outbuf, inbuf_rebuilt, out_len_ucs2);
+    ucs2_to_utf8((char*)result.str.get(), inbuf_rebuilt, result.length);
     if (strcmp(inbuf, inbuf_rebuilt) != 0) {
-        rc = -1;
+        result.valid = false;
+        result.error = "Input string is not UCS-2 compatible. ";
     }    
     
     /*
@@ -73,11 +85,11 @@ int utf8_to_ucs2(char* inbuf, char* outbuf) {
     printf("Comparison: %d\n", strcmp(inbuf, inbuf_rebuilt));
     printf("Input: [%s] - len: %d \n", inbuf, strlen(inbuf));
     printf("Input check: [%s] - len: %d\n", inbuf_rebuilt, strlen(inbuf_rebuilt));
-    printf("Input size: %d; Output size: %d\n", strlen(inbuf), out_len_ucs2);
-    display_buffer((unsigned char*)outbuf, out_len_ucs2*2);
-    */    
+    printf("Input size: %d; Output size: %d\n", strlen(inbuf), result.length);
+    display_buffer((unsigned char*)result.str.get(), result.length*2);
+    */  
 
-    return rc;
+    return result;
 }
 
 int ucs2_to_utf8(char* inbuf, char* outbuf, size_t inbuf_len) {

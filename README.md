@@ -1,6 +1,6 @@
-# odbc
+# uODBC
 
-This is a fork of the "Node.js bindings for unixODBC" project available at https://github.com/markdirish/node-odbc.
+This is a fork of the **Node.js bindings for unixODBC** project available at https://github.com/markdirish/node-odbc.
 
 The main goals of this fork are to:
 - add UNICODE support when running under Linux/MacOS with the official MS SQL Server ODBC driver [available here](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server?view=sql-server-ver16).
@@ -11,7 +11,39 @@ The original documentation is available at [here](README.original.md).
 
 This document contains additional information regarding the proposed additons.
 
-## Setting up
+---
+## Functional specification
+
+This is targeted at the use of the official [MS SQL Server ODBC driver]((https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server?view=sql-server-ver16)) under Linux with [unixODBC](https://www.unixodbc.org/) as driver manager.
+### UTF-8 Support
+
+- Handle UTF-8 literals in queries.
+    Example: 
+    ```
+    insert into ΩDBC.dbo.Tαble2 ([Col Ω], [Col α]) values (N'Ω', N'α')
+    ```
+    > **WARNING**: ODBC only supports the UCS-2 subset of UNICODE. Characters such as 😀 (emojii) are therefore not supported, even if they can be represented in UTF-8.
+---
+## Usage
+
+- Check and, if needed, set the `locale` on your system to a UTF-8 compatible encoding (e.g., `en_US.UTF-8`).
+- Check and, if needed, install `libiconv`
+  For MacOS: `brew install libiconv`
+- Install the package from GitHub:
+ `npm install https://github.com/lvoinea/node-odbc#utf8-support`
+- Require package `uodbc` in your `js` script:
+    ```
+    const odbc = require('uodbc');
+    const connection = await odbc.connect('DSN=...;UID=...;PWD=...;');
+    statement = "insert into ΩDBC.dbo.Tαble2 ([Col Ω], [Col α]) values (N'an Ω', 'other')"
+    result = await connection.query(statement);
+    ```
+- For more details over the supported API see original documentation [here](README.original.md).
+
+
+---
+## Development
+### Setting up
 
 - Make sure Node.js is installed
 - Install packages `npm ci`
@@ -19,7 +51,7 @@ This document contains additional information regarding the proposed additons.
     - libiconv
     For MacOS: `brew install libiconv`
 
-## Development
+### Building
 
 Make sure Node.js package `node-pre-gyp` is installed in the global space.
 
@@ -30,7 +62,7 @@ Make sure Node.js package `node-pre-gyp` is installed in the global space.
     - Update the `package.json` to point to an accesible repository
     - run `npm run publish`
 
-## Testing
+### Testing
 
 Make sure Node.js package `mocha` is installed in the global space
 
