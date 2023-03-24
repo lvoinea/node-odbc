@@ -1,5 +1,5 @@
 {
-  "name": "odbc",
+  "name": "uodbc",
   "description": "unixodbc bindings for node with UTF8 support from MS SQL Server Driver",
   "version": "0.0.1",
   "homepage": "http://github.com/lvoinea/node-odbc/",
@@ -58,7 +58,7 @@
     "mocha": "^9.2.2"
   },
   "binary": {
-    "module_name": "odbc",
+    "module_name": "uodbc",
     "module_path": "./lib/bindings/napi-v{napi_build_version}",
     "remote_path": "v{version}",
     "host": "https://github.com/lvoinea/node-odbc/releases/download",
