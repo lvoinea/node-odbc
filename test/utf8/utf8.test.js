@@ -10,7 +10,7 @@ const DBMS_LIST = [
 global.dbms = undefined;
 global.table = `${process.env.DB_NAME}.${process.env.DB_SCHEMA}.${process.env.DB_TABLE}`;
 
-describe('UTF8...', () => {
+describe('UTF8:', () => {
   let connection = null;
 
   before(async () => {
@@ -57,14 +57,14 @@ describe('UTF8...', () => {
     await connection.close();    
   });
 
-  describe('...with query...', () => {
-    it('...should accept UTF8 value literals.', async () => {       
+  describe('...with query', () => {
+    it('- should accept UTF8 value literals.', async () => {       
       statement = `insert into ${global.table} ([Col Ω], [Col α]) values (N'an Ω', 'other')`
       result = await connection.query(statement);
       assert.equal(result.statement, statement);
     });
 
-    it('...should not accept UNICODE literal beyond UCS-2 (e.g., emoji 😀)', async () => {      
+    it('- should not accept UNICODE literal beyond UCS-2 (e.g., emoji 😀)', async () => {      
       statement = `insert into ${global.table} ([Col Ω], [Col α]) values (N'😀', 'other')`
       await assert.rejects(async() => connection.query(statement));   
       
@@ -78,7 +78,7 @@ describe('UTF8...', () => {
       await assert.rejects(async() => connection.query(statement));
     });
 
-    it('...should return UTF8 query values', async () => {      
+    it('- should return UTF8 query values', async () => {      
       statement = `select [Col Ω],[Col α] from ${global.table}`
       result = await connection.query(statement);
       assert.deepEqual(result[0], { 'Col Ω': 'an Ω', 'Col α': 'other' });
@@ -93,9 +93,9 @@ describe('UTF8...', () => {
     });
   });
 
-  describe('...with columns...', () => {
+  describe('...with columns', () => {
 
-    it('...should return UTF8 column names', async () => {      
+    it('- should accept UTF8 literals', async () => {      
       result = await connection.columns(
         process.env.DB_NAME, 
         process.env.DB_SCHEMA,
@@ -105,13 +105,58 @@ describe('UTF8...', () => {
       assert.deepEqual(result[1]['COLUMN_NAME'], 'Col α');
     });
 
-    it('...should not accept UNICODE literals beyond UCS-2 (e.g., emoji 😀)', async () => {      
+    it('- should accept NULL values', async () => {      
+      result = await connection.columns(
+        process.env.DB_NAME, 
+        process.env.DB_SCHEMA,
+        null,
+        null);
+        assert.deepEqual(result[0]['COLUMN_NAME'], 'Col Ω');
+        assert.deepEqual(result[1]['COLUMN_NAME'], 'Col α');
+    });
+
+    it('- should not accept UNICODE literals beyond UCS-2 (e.g., emoji 😀)', async () => {      
       await assert.rejects(async() => connection.columns(
         '😀', 
         '😀',
         '😀',
         null));
     });
+  });
+
+  describe('...with tables', () => {
+    it('- should accept UTF8 literals', async () => {      
+      result = await connection.tables(
+        process.env.DB_NAME, 
+        process.env.DB_SCHEMA,
+        process.env.DB_TABLE,
+        'TABLE');
+      assert.deepEqual(result[0]['TABLE_CAT'], process.env.DB_NAME);
+      assert.deepEqual(result[0]['TABLE_SCHEM'], process.env.DB_SCHEMA);
+      assert.deepEqual(result[0]['TABLE_NAME'], process.env.DB_TABLE);
+      assert.deepEqual(result[0]['TABLE_TYPE'], 'TABLE');
+    });
+
+    it('- should accept NULL values', async () => {      
+      result = await connection.tables(
+        process.env.DB_NAME, 
+        process.env.DB_SCHEMA,
+        null,
+        null);
+      assert.deepEqual(result[0]['TABLE_CAT'], process.env.DB_NAME);
+      assert.deepEqual(result[0]['TABLE_SCHEM'], process.env.DB_SCHEMA);
+      assert.deepEqual(result[0]['TABLE_NAME'], process.env.DB_TABLE);
+      assert.deepEqual(result[0]['TABLE_TYPE'], 'TABLE');
+    });
+
+    it('- should not accept UNICODE literals beyond UCS-2 (e.g., emoji 😀)', async () => {      
+      await assert.rejects(async() => connection.tables(
+        '😀', 
+        '😀',
+        '😀',
+        null));
+    });
+
   });
 
 });

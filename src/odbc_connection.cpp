@@ -2545,19 +2545,75 @@ class TablesAsyncWorker : public ODBCAsyncWorker {
         1
       );
 
-      return_code =
-      SQLTables
-      (
-        data->hstmt,   // StatementHandle
-        data->catalog, // CatalogName
-        SQL_NTS,       // NameLength1
-        data->schema,  // SchemaName
-        SQL_NTS,       // NameLength2
-        data->table,   // TableName
-        SQL_NTS,       // NameLength3
-        data->type,    // TableType
-        SQL_NTS        // NameLength4
-      );
+      if (is_utf8_locale()) {
+
+        bool parameter_check = true;        
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
+        // Catalog
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
+        }        
+
+        // Schema
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
+        }
+
+        // Table
+        Ucs2Str table = utf8_to_ucs2((char*)data->table);
+        if (!table.valid) {
+          ss << "Table name not accepted: " << table.error;
+          parameter_check = false;
+        }
+
+        // Table type
+        Ucs2Str table_type = utf8_to_ucs2((char*)data->type);
+        if (!table_type.valid) {
+          ss << "Table type name not accepted: " << table_type.error;
+          parameter_check = false;
+        }
+
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          SQLTablesW
+          (
+            data->hstmt,          // StatementHandle
+            catalog.str.get(),    // CatalogName
+            catalog.length,       // CatalogName length
+            schema.str.get(),     // SchemaName
+            schema.length,        // SchemaName length
+            table.str.get(),      // TableName
+            table.length,         // TableName length
+            table_type.str.get(), // TableType
+            table_type.length     // TableType length
+          );
+        } else {
+          SetError(ss.str());
+          return;
+        }
+      }
+      else {
+        return_code =
+        SQLTables
+        (
+          data->hstmt,   // StatementHandle
+          data->catalog, // CatalogName
+          SQL_NTS,       // NameLength1
+          data->schema,  // SchemaName
+          SQL_NTS,       // NameLength2
+          data->table,   // TableName
+          SQL_NTS,       // NameLength3
+          data->type,    // TableType
+          SQL_NTS        // NameLength4
+        );
+      }
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error getting table information\0");
@@ -2818,6 +2874,7 @@ class ColumnsAsyncWorker : public ODBCAsyncWorker {
           SQL_NTS        // NameLength4
         );
       }
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error getting column information\0");
