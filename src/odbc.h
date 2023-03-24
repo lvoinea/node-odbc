@@ -162,8 +162,7 @@ typedef struct ColumnData {
 
 typedef struct QueryOptions {
   bool         use_cursor                    = false;
-  SQLTCHAR    *cursor_name                   = nullptr;
-  SQLSMALLINT  cursor_name_length            = 0;
+  SQLTCHAR    *cursor_name                   = nullptr;  
   SQLULEN      fetch_size                    = 1;
   SQLULEN      timeout                       = 0;
   SQLLEN       initial_long_data_buffer_size = MB_SIZE;
@@ -177,7 +176,6 @@ typedef struct QueryOptions {
   void reset() {
     this->use_cursor   = false;
     this->cursor_name = nullptr;
-    this->cursor_name_length = 0;
     this->fetch_size = 1;
     this->timeout = 0;
     this->initial_long_data_buffer_size = MB_SIZE;

@@ -21,12 +21,21 @@ describe('UTF8:', () => {
         //require('dotenv').config({ path: `test/DBMS/${process.env.DBMS}/.env` });
         global.dbms = process.env.DBMS;
         
-        statement = `CREATE TABLE ${global.table} (
-          [Col Ω] nvarchar(255),
-          [Col α] varchar(255)
-        );`
         connection = await odbc.connect(`${process.env.CONNECTION_STRING}`);
-        await connection.query(statement);
+        
+        ddl_statements = [
+          `CREATE TABLE ${global.table} (
+            [Col Ω] nvarchar(255),
+            [Col α] varchar(255)
+          );`,
+          `USE [${process.env.DB_NAME}]`,
+          `DROP PROCEDURE IF EXISTS [${process.env.DB_SCHEMA}].[ΩProc]`,
+          `CREATE PROCEDURE [${process.env.DB_SCHEMA}].[ΩProc] @value NVARCHAR(32) AS SELECT N'Ω', @value;`
+        ]
+        for (const statement of ddl_statements) {          
+          await connection.query(statement);
+        }
+        console.log('Exit');
         await connection.close();        
         
       }
@@ -54,6 +63,8 @@ describe('UTF8:', () => {
   after(async () => {    
     const connection = await odbc.connect(`${process.env.CONNECTION_STRING}`);
     await connection.query(`DROP TABLE ${global.table}`);
+    await connection.query(`USE [${process.env.DB_NAME}]`);
+    await connection.query(`DROP PROCEDURE [${process.env.DB_SCHEMA}].[ΩProc]`);
     await connection.close();    
   });
 
@@ -179,6 +190,16 @@ describe('UTF8:', () => {
       statement = await connection.createStatement();
       await assert.rejects(async() => statement.prepare(
         "insert into ΩDBC.dbo.Tαble2 ([Col Ω], [Col 😀]) values (?, ?)"));
+    });
+
+  });
+
+  describe('...with statement.callProcedure()', () => {
+    
+    it('- should accept UTF8 literals', async () => {
+      result = await connection.callProcedure(process.env.DB_NAME, process.env.DB_SCHEMA, 'ΩProc', ['α']);
+      assert.equal(result.statement, `{ CALL ${process.env.DB_NAME}.${process.env.DB_SCHEMA}.ΩProc (?) }`);
+      assert.deepEqual(result.parameters, [ 'α' ]);
     });
 
   });

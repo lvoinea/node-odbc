@@ -478,8 +478,7 @@ parse_query_options
       std::string cursor_string;
       cursor_string = cursor_value.As<Napi::String>().Utf8Value();
 #endif
-      query_options->cursor_name = (SQLTCHAR *)cursor_string.c_str();
-      query_options->cursor_name_length = cursor_string.length();
+      query_options->cursor_name = (SQLTCHAR *)cursor_string.c_str();      
     }
     else if (cursor_value.IsBoolean())
     {
@@ -905,15 +904,32 @@ class QueryAsyncWorker : public ODBCAsyncWorker {
           if (data->query_options.use_cursor)
           {
             if (data->query_options.cursor_name != NULL)
-            {
-              return_code =
-              SQLSetCursorName
-              (
-                data->hstmt,
-                data->query_options.cursor_name,
-                data->query_options.cursor_name_length
-              );
-
+            {              
+              if (is_utf8_locale()) {            
+                // Assume the application handles UNICODE
+                            
+                Ucs2Str cursor_name = utf8_to_ucs2((char*)data->query_options.cursor_name);
+                if (!cursor_name.valid) {
+                  SetError((std::string("[node-odbc] Cursor name not accepted: ") + cursor_name.error).c_str());
+                  return;
+                }
+                return_code = SQLSetCursorNameW (
+                  data->hstmt,
+                  cursor_name.str.get(),
+                  cursor_name.length
+                );
+                
+              }
+              else {
+                return_code =
+                SQLSetCursorName
+                (
+                  data->hstmt,
+                  data->query_options.cursor_name,
+                  SQL_NTS
+                );
+              }
+            
               if (!SQL_SUCCEEDED(return_code)) {
                 this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
                 SetError("[odbc] Error setting the cursor name on the statement\0");
@@ -1345,24 +1361,71 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
         1
       );
 
-      return_code = 
-      SQLProcedures
-      (
-        data->hstmt,     // StatementHandle
-        data->catalog,   // CatalogName
-        SQL_NTS,         // NameLengh1
-        data->schema,    // SchemaName
-        SQL_NTS,         // NameLength2
-        data->procedure, // ProcName
-        SQL_NTS          // NameLength3
-      );
+      if (is_utf8_locale()) {
+
+        bool parameter_check = true;        
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
+        // Catalog
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
+        }        
+
+        // Schema
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
+        }
+
+        // Procedure
+        Ucs2Str procedure = utf8_to_ucs2((char*)data->procedure);
+        if (!procedure.valid) {
+          ss << "Procedure name not accepted: " << procedure.error;
+          parameter_check = false;
+        }
+
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          SQLProceduresW
+          (
+            data->hstmt,          // StatementHandle
+            catalog.str.get(),    // CatalogName
+            catalog.length,       // CatalogName length
+            schema.str.get(),     // SchemaName
+            schema.length,        // SchemaName length
+            procedure.str.get(),  // Procedure
+            procedure.length      // Procedure length
+          );
+        } else {
+          SetError(ss.str());
+          return;
+        }
+      }
+      else {
+        return_code = 
+        SQLProcedures
+        (
+          data->hstmt,     // StatementHandle
+          data->catalog,   // CatalogName
+          SQL_NTS,         // NameLengh1
+          data->schema,    // SchemaName
+          SQL_NTS,         // NameLength2
+          data->procedure, // ProcName
+          SQL_NTS          // NameLength3
+        );
+      }
+
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error retrieving information about the procedures in the database\0");
         return;
       }
 
-      
       return_code = prepare_for_fetch(data);
       bool alloc_error = false;
       return_code =
@@ -1402,20 +1465,69 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
         data,
         1
       );
+      
+      if (is_utf8_locale()) {
 
-      return_code = 
-      SQLProcedureColumns
-      (
-        data->hstmt,     // StatementHandle
-        data->catalog,   // CatalogName
-        SQL_NTS,         // NameLengh1
-        data->schema,    // SchemaName
-        SQL_NTS,         // NameLength2
-        data->procedure, // ProcName
-        SQL_NTS,         // NameLength3
-        NULL,            // ColumnName
-        SQL_NTS          // NameLength4
-      );
+        bool parameter_check = true;        
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
+        // Catalog
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
+        }        
+
+        // Schema
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
+        }
+
+        // Procedure
+        Ucs2Str procedure = utf8_to_ucs2((char*)data->procedure);
+        if (!procedure.valid) {
+          ss << "Procedure name not accepted: " << procedure.error;
+          parameter_check = false;
+        }
+
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          SQLProcedureColumnsW
+          (
+            data->hstmt,          // StatementHandle
+            catalog.str.get(),    // CatalogName
+            catalog.length,       // CatalogName length
+            schema.str.get(),     // SchemaName
+            schema.length,        // SchemaName length
+            procedure.str.get(),  // ProcedureName
+            procedure.length,     // ProcedureName length
+            NULL,                 // ColumnName
+            0                     // ColumnName length
+          );
+        } else {
+          SetError(ss.str());
+          return;
+        }
+      }
+      else {
+        return_code = 
+        SQLProcedureColumns
+        (
+          data->hstmt,     // StatementHandle
+          data->catalog,   // CatalogName
+          SQL_NTS,         // NameLengh1
+          data->schema,    // SchemaName
+          SQL_NTS,         // NameLength2
+          data->procedure, // ProcName
+          SQL_NTS,         // NameLength3
+          NULL,            // ColumnName
+          SQL_NTS          // NameLength4
+        );
+      }
+      
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error retrieving information about the columns in the procedure\0");
@@ -1441,27 +1553,39 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
         return;
       }
 
-      if (data->parameterCount != (SQLSMALLINT)data->storedRows.size()) {
-        SetError("[odbc] The number of parameters the procedure expects and and the number of passed parameters is not equal\0");
-        return;
-      }
-
       #define SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX     4
       #define SQLPROCEDURECOLUMNS_DATA_TYPE_INDEX       5
       #define SQLPROCEDURECOLUMNS_COLUMN_SIZE_INDEX     7
       #define SQLPROCEDURECOLUMNS_DECIMAL_DIGITS_INDEX  9
       #define SQLPROCEDURECOLUMNS_NULLABLE_INDEX       11
+      
+      int parametersReturned = 0;
+      for (int i = 0; i < data->storedRows.size(); i++) {
+        if (data->storedRows[i][SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX].smallint_data != SQL_RETURN_VALUE) {
+          parametersReturned++;
+        }        
+      }
+
+      
+      if (data->parameterCount != parametersReturned) {
+        SetError("[odbc] The number of parameters the procedure expects and and the number of passed parameters is not equal\0");
+        return;
+      }
 
       // get stored column parameter data from the result set
+      int i = 0;
+      for (int j = 0; j < data->storedRows.size(); j++) {
 
-      for (int i = 0; i < data->parameterCount; i++) {
+        if (data->storedRows[j][SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX].smallint_data == SQL_RETURN_VALUE) {
+          continue;
+        }
 
         Parameter *parameter = data->parameters[i];
 
-        data->parameters[i]->InputOutputType = data->storedRows[i][SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX].smallint_data;
-        data->parameters[i]->ParameterType = data->storedRows[i][SQLPROCEDURECOLUMNS_DATA_TYPE_INDEX].smallint_data; // DataType -> ParameterType
-        data->parameters[i]->ColumnSize = data->storedRows[i][SQLPROCEDURECOLUMNS_COLUMN_SIZE_INDEX].integer_data; // ParameterSize -> ColumnSize
-        data->parameters[i]->Nullable = data->storedRows[i][SQLPROCEDURECOLUMNS_NULLABLE_INDEX].smallint_data;
+        data->parameters[i]->InputOutputType = data->storedRows[j][SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX].smallint_data;
+        data->parameters[i]->ParameterType = data->storedRows[j][SQLPROCEDURECOLUMNS_DATA_TYPE_INDEX].smallint_data; // DataType -> ParameterType
+        data->parameters[i]->ColumnSize = data->storedRows[j][SQLPROCEDURECOLUMNS_COLUMN_SIZE_INDEX].integer_data; // ParameterSize -> ColumnSize
+        data->parameters[i]->Nullable = data->storedRows[j][SQLPROCEDURECOLUMNS_NULLABLE_INDEX].smallint_data;
 
         // For each parameter, need to manipulate the data buffer and C type
         // depending on what the InputOutputType is:
@@ -1848,6 +1972,7 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
             }
           }
         }
+        i++;
       }
 
       // We saved a reference to parameters passed it. Need to tell which
@@ -1905,11 +2030,33 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
         1
       );
 
-      return_code = SQLExecDirect(
-        data->hstmt, // StatementHandle
-        data->sql,   // StatementText
-        SQL_NTS      // TextLength
-      );
+      if (is_utf8_locale()) {            
+        // Assume the application handles UNICODE
+                    
+        Ucs2Str sql = utf8_to_ucs2((char*)data->sql);
+        if (!sql.valid) {
+          SetError((std::string("[node-odbc] Query not accepted: ") + sql.error).c_str());
+          return;
+        }
+        return_code =
+        SQLExecDirectW
+        (
+          data->hstmt,
+          sql.str.get(),
+          sql.length
+        );
+        
+      }
+      else {
+        return_code =
+        SQLExecDirect
+        (
+          data->hstmt,
+          data->sql,
+          SQL_NTS
+        );
+      }
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error calling the procedure\0");

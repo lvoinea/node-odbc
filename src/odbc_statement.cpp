@@ -400,13 +400,30 @@ class ExecuteAsyncWorker : public ODBCAsyncWorker {
         {
           if (data->query_options.cursor_name != NULL)
           {
-            return_code =
-            SQLSetCursorName
-            (
-              data->hstmt,
-              data->query_options.cursor_name,
-              data->query_options.cursor_name_length
-            );
+            if (is_utf8_locale()) {            
+              // Assume the application handles UNICODE
+                          
+              Ucs2Str cursor_name = utf8_to_ucs2((char*)data->query_options.cursor_name);
+              if (!cursor_name.valid) {
+                SetError((std::string("[node-odbc] Cursor name not accepted: ") + cursor_name.error).c_str());
+                return;
+              }
+              return_code = SQLSetCursorNameW (
+                data->hstmt,
+                cursor_name.str.get(),
+                cursor_name.length
+              );
+              
+            }
+            else {
+              return_code =
+              SQLSetCursorName
+              (
+                data->hstmt,
+                data->query_options.cursor_name,
+                SQL_NTS
+              );
+            }
 
             if (!SQL_SUCCEEDED(return_code)) {
               this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
