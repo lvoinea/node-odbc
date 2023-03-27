@@ -7,4 +7,4 @@ core*
 .vscode
 build*
 lib/bindings
-/local/
+local

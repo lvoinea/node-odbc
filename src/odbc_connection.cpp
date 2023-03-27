@@ -16,10 +16,13 @@
   OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 
+#include <sstream>
+
 #include "odbc.h"
 #include "odbc_connection.h"
 #include "odbc_statement.h"
 #include "odbc_cursor.h"
+#include "utils.h"
 
 #define MAX_UTF8_BYTES 4
 
@@ -475,8 +478,7 @@ parse_query_options
       std::string cursor_string;
       cursor_string = cursor_value.As<Napi::String>().Utf8Value();
 #endif
-      query_options->cursor_name = (SQLTCHAR *)cursor_string.c_str();
-      query_options->cursor_name_length = cursor_string.length();
+      query_options->cursor_name = (SQLTCHAR *)cursor_string.c_str();      
     }
     else if (cursor_value.IsBoolean())
     {
@@ -598,18 +600,40 @@ set_fetch_size
     SQLINTEGER  nativeError;
     SQLTCHAR    errorMessage[ERROR_MESSAGE_BUFFER_BYTES];
 
-    diagnostic_return_code =
-    SQLGetDiagRec
-    (
-      SQL_HANDLE_STMT,            // HandleType
-      data->hstmt,                // Handle
-      1,                          // RecNumber
-      errorSQLState,              // SQLState
-      &nativeError,               // NativeErrorPtr
-      errorMessage,               // MessageText
-      ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
-      &textLength                 // TextLengthPtr
-    );
+    if (is_utf8_locale()) {
+
+      WCHAR state_ucs2[SQL_SQLSTATE_SIZE + 1];    
+      WCHAR message_ucs2[ERROR_MESSAGE_BUFFER_CHARS];      
+
+      diagnostic_return_code = SQLGetDiagRecW (
+        SQL_HANDLE_STMT,            // HandleType
+        data->hstmt,                // Handle
+        1,                          // RecNumber
+        state_ucs2,                 // SQLState
+        &nativeError,               // NativeErrorPtr
+        message_ucs2,               // MessageText
+        ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
+        &textLength                 // TextLengthPtr
+      );
+
+      ucs2_to_utf8((char*)state_ucs2, (char*)errorSQLState, SQL_SQLSTATE_SIZE + 1);
+      ucs2_to_utf8((char*)message_ucs2, (char*)errorMessage, textLength);
+      textLength = strlen((char*)errorMessage);
+    }
+    else {
+      diagnostic_return_code =
+      SQLGetDiagRec
+      (
+        SQL_HANDLE_STMT,            // HandleType
+        data->hstmt,                // Handle
+        1,                          // RecNumber
+        errorSQLState,              // SQLState
+        &nativeError,               // NativeErrorPtr
+        errorMessage,               // MessageText
+        ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
+        &textLength                 // TextLengthPtr
+      );
+    }
 
     if (!SQL_SUCCEEDED(diagnostic_return_code)) 
     {
@@ -655,18 +679,40 @@ set_fetch_size
 
     for (SQLSMALLINT i = 0; i < statusRecCount; i++) {
 
-      diagnostic_return_code =
-      SQLGetDiagRec
-      (
-        SQL_HANDLE_STMT,            // HandleType
-        data->hstmt,                // Handle
-        i + 1,                      // RecNumber
-        errorSQLState,              // SQLState
-        &nativeError,               // NativeErrorPtr
-        errorMessage,               // MessageText
-        ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
-        &textLength                 // TextLengthPtr
-      );
+      if (is_utf8_locale()) {
+
+        WCHAR state_ucs2[SQL_SQLSTATE_SIZE + 1];    
+        WCHAR message_ucs2[ERROR_MESSAGE_BUFFER_CHARS];      
+
+        diagnostic_return_code = SQLGetDiagRecW (
+          SQL_HANDLE_STMT,            // HandleType
+          data->hstmt,                // Handle
+          i+1,                          // RecNumber
+          state_ucs2,                 // SQLState
+          &nativeError,               // NativeErrorPtr
+          message_ucs2,               // MessageText
+          ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
+          &textLength                 // TextLengthPtr
+        );
+
+        ucs2_to_utf8((char*)state_ucs2, (char*)errorSQLState, SQL_SQLSTATE_SIZE + 1);
+        ucs2_to_utf8((char*)message_ucs2, (char*)errorMessage, textLength);
+        textLength = strlen((char*)errorMessage);
+      }
+      else {
+        diagnostic_return_code =
+        SQLGetDiagRec
+        (
+          SQL_HANDLE_STMT,            // HandleType
+          data->hstmt,                // Handle
+          i+1,                        // RecNumber
+          errorSQLState,              // SQLState
+          &nativeError,               // NativeErrorPtr
+          errorMessage,               // MessageText
+          ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
+          &textLength                 // TextLengthPtr
+        );
+      }
 
       if (SQL_SUCCEEDED(diagnostic_return_code)) 
       {
@@ -791,13 +837,30 @@ class QueryAsyncWorker : public ODBCAsyncWorker {
         // querying with parameters, need to prepare, bind, execute
         if (data->parameterCount > 0) {
           // binds all parameters to the query
-          return_code =
-          SQLPrepare
-          (
-            data->hstmt,
-            data->sql,
-            SQL_NTS
-          );
+          
+          if (is_utf8_locale()) {            
+            // Assume the application handles UNICODE
+
+            Ucs2Str sql = utf8_to_ucs2((char*)data->sql);
+            if (!sql.valid) {
+              SetError((std::string("[node-odbc] Query not accepted: ") + sql.error).c_str());
+              return;
+            }
+            return_code =  SQLPrepareW (
+              data->hstmt,
+              sql.str.get(),
+              sql.length
+            );
+          }
+          else {
+            return_code = SQLPrepare
+            (
+              data->hstmt, // StatementHandle
+              data->sql,   // StatementText
+              SQL_NTS      // TextLength
+            );
+          }
+
           if (!SQL_SUCCEEDED(return_code)) {
             this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
             SetError("[odbc] Error preparing the SQL statement\0");
@@ -846,13 +909,33 @@ class QueryAsyncWorker : public ODBCAsyncWorker {
         }
         // querying without parameters, can just use SQLExecDirect
         else {
-          return_code =
-          SQLExecDirect
-          (
-            data->hstmt,
-            data->sql,
-            SQL_NTS
-          );
+          if (is_utf8_locale()) {            
+            // Assume the application handles UNICODE
+                        
+            Ucs2Str sql = utf8_to_ucs2((char*)data->sql);
+            if (!sql.valid) {
+              SetError((std::string("[node-odbc] Query not accepted: ") + sql.error).c_str());
+              return;
+            }
+            return_code =
+            SQLExecDirectW
+            (
+              data->hstmt,
+              sql.str.get(),
+              sql.length
+            );
+            
+          }
+          else {
+            return_code =
+            SQLExecDirect
+            (
+              data->hstmt,
+              data->sql,
+              SQL_NTS
+            );
+          }
+
           if (!SQL_SUCCEEDED(return_code) && return_code != SQL_NO_DATA) {
             this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
             SetError("[odbc] Error executing the sql statement\0");
@@ -865,15 +948,32 @@ class QueryAsyncWorker : public ODBCAsyncWorker {
           if (data->query_options.use_cursor)
           {
             if (data->query_options.cursor_name != NULL)
-            {
-              return_code =
-              SQLSetCursorName
-              (
-                data->hstmt,
-                data->query_options.cursor_name,
-                data->query_options.cursor_name_length
-              );
-
+            {              
+              if (is_utf8_locale()) {            
+                // Assume the application handles UNICODE
+                            
+                Ucs2Str cursor_name = utf8_to_ucs2((char*)data->query_options.cursor_name);
+                if (!cursor_name.valid) {
+                  SetError((std::string("[node-odbc] Cursor name not accepted: ") + cursor_name.error).c_str());
+                  return;
+                }
+                return_code = SQLSetCursorNameW (
+                  data->hstmt,
+                  cursor_name.str.get(),
+                  cursor_name.length
+                );
+                
+              }
+              else {
+                return_code =
+                SQLSetCursorName
+                (
+                  data->hstmt,
+                  data->query_options.cursor_name,
+                  SQL_NTS
+                );
+              }
+            
               if (!SQL_SUCCEEDED(return_code)) {
                 this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
                 SetError("[odbc] Error setting the cursor name on the statement\0");
@@ -1305,24 +1405,71 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
         1
       );
 
-      return_code = 
-      SQLProcedures
-      (
-        data->hstmt,     // StatementHandle
-        data->catalog,   // CatalogName
-        SQL_NTS,         // NameLengh1
-        data->schema,    // SchemaName
-        SQL_NTS,         // NameLength2
-        data->procedure, // ProcName
-        SQL_NTS          // NameLength3
-      );
+      if (is_utf8_locale()) {
+
+        bool parameter_check = true;        
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
+        // Catalog
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
+        }        
+
+        // Schema
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
+        }
+
+        // Procedure
+        Ucs2Str procedure = utf8_to_ucs2((char*)data->procedure);
+        if (!procedure.valid) {
+          ss << "Procedure name not accepted: " << procedure.error;
+          parameter_check = false;
+        }
+
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          SQLProceduresW
+          (
+            data->hstmt,          // StatementHandle
+            catalog.str.get(),    // CatalogName
+            catalog.length,       // CatalogName length
+            schema.str.get(),     // SchemaName
+            schema.length,        // SchemaName length
+            procedure.str.get(),  // Procedure
+            procedure.length      // Procedure length
+          );
+        } else {
+          SetError(ss.str());
+          return;
+        }
+      }
+      else {
+        return_code = 
+        SQLProcedures
+        (
+          data->hstmt,     // StatementHandle
+          data->catalog,   // CatalogName
+          SQL_NTS,         // NameLengh1
+          data->schema,    // SchemaName
+          SQL_NTS,         // NameLength2
+          data->procedure, // ProcName
+          SQL_NTS          // NameLength3
+        );
+      }
+
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error retrieving information about the procedures in the database\0");
         return;
       }
 
-      
       return_code = prepare_for_fetch(data);
       bool alloc_error = false;
       return_code =
@@ -1362,20 +1509,69 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
         data,
         1
       );
+      
+      if (is_utf8_locale()) {
 
-      return_code = 
-      SQLProcedureColumns
-      (
-        data->hstmt,     // StatementHandle
-        data->catalog,   // CatalogName
-        SQL_NTS,         // NameLengh1
-        data->schema,    // SchemaName
-        SQL_NTS,         // NameLength2
-        data->procedure, // ProcName
-        SQL_NTS,         // NameLength3
-        NULL,            // ColumnName
-        SQL_NTS          // NameLength4
-      );
+        bool parameter_check = true;        
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
+        // Catalog
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
+        }        
+
+        // Schema
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
+        }
+
+        // Procedure
+        Ucs2Str procedure = utf8_to_ucs2((char*)data->procedure);
+        if (!procedure.valid) {
+          ss << "Procedure name not accepted: " << procedure.error;
+          parameter_check = false;
+        }
+
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          SQLProcedureColumnsW
+          (
+            data->hstmt,          // StatementHandle
+            catalog.str.get(),    // CatalogName
+            catalog.length,       // CatalogName length
+            schema.str.get(),     // SchemaName
+            schema.length,        // SchemaName length
+            procedure.str.get(),  // ProcedureName
+            procedure.length,     // ProcedureName length
+            NULL,                 // ColumnName
+            0                     // ColumnName length
+          );
+        } else {
+          SetError(ss.str());
+          return;
+        }
+      }
+      else {
+        return_code = 
+        SQLProcedureColumns
+        (
+          data->hstmt,     // StatementHandle
+          data->catalog,   // CatalogName
+          SQL_NTS,         // NameLengh1
+          data->schema,    // SchemaName
+          SQL_NTS,         // NameLength2
+          data->procedure, // ProcName
+          SQL_NTS,         // NameLength3
+          NULL,            // ColumnName
+          SQL_NTS          // NameLength4
+        );
+      }
+      
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error retrieving information about the columns in the procedure\0");
@@ -1401,27 +1597,39 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
         return;
       }
 
-      if (data->parameterCount != (SQLSMALLINT)data->storedRows.size()) {
-        SetError("[odbc] The number of parameters the procedure expects and and the number of passed parameters is not equal\0");
-        return;
-      }
-
       #define SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX     4
       #define SQLPROCEDURECOLUMNS_DATA_TYPE_INDEX       5
       #define SQLPROCEDURECOLUMNS_COLUMN_SIZE_INDEX     7
       #define SQLPROCEDURECOLUMNS_DECIMAL_DIGITS_INDEX  9
       #define SQLPROCEDURECOLUMNS_NULLABLE_INDEX       11
+      
+      int parametersReturned = 0;
+      for (int i = 0; i < (int)data->storedRows.size(); i++) {
+        if (data->storedRows[i][SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX].smallint_data != SQL_RETURN_VALUE) {
+          parametersReturned++;
+        }        
+      }
+
+      
+      if (data->parameterCount != parametersReturned) {
+        SetError("[odbc] The number of parameters the procedure expects and and the number of passed parameters is not equal\0");
+        return;
+      }
 
       // get stored column parameter data from the result set
+      int i = 0;
+      for (int j = 0; j < (int)data->storedRows.size(); j++) {
 
-      for (int i = 0; i < data->parameterCount; i++) {
+        if (data->storedRows[j][SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX].smallint_data == SQL_RETURN_VALUE) {
+          continue;
+        }
 
         Parameter *parameter = data->parameters[i];
 
-        data->parameters[i]->InputOutputType = data->storedRows[i][SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX].smallint_data;
-        data->parameters[i]->ParameterType = data->storedRows[i][SQLPROCEDURECOLUMNS_DATA_TYPE_INDEX].smallint_data; // DataType -> ParameterType
-        data->parameters[i]->ColumnSize = data->storedRows[i][SQLPROCEDURECOLUMNS_COLUMN_SIZE_INDEX].integer_data; // ParameterSize -> ColumnSize
-        data->parameters[i]->Nullable = data->storedRows[i][SQLPROCEDURECOLUMNS_NULLABLE_INDEX].smallint_data;
+        data->parameters[i]->InputOutputType = data->storedRows[j][SQLPROCEDURECOLUMNS_COLUMN_TYPE_INDEX].smallint_data;
+        data->parameters[i]->ParameterType = data->storedRows[j][SQLPROCEDURECOLUMNS_DATA_TYPE_INDEX].smallint_data; // DataType -> ParameterType
+        data->parameters[i]->ColumnSize = data->storedRows[j][SQLPROCEDURECOLUMNS_COLUMN_SIZE_INDEX].integer_data; // ParameterSize -> ColumnSize
+        data->parameters[i]->Nullable = data->storedRows[j][SQLPROCEDURECOLUMNS_NULLABLE_INDEX].smallint_data;
 
         // For each parameter, need to manipulate the data buffer and C type
         // depending on what the InputOutputType is:
@@ -1808,6 +2016,7 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
             }
           }
         }
+        i++;
       }
 
       // We saved a reference to parameters passed it. Need to tell which
@@ -1865,11 +2074,33 @@ class CallProcedureAsyncWorker : public ODBCAsyncWorker {
         1
       );
 
-      return_code = SQLExecDirect(
-        data->hstmt, // StatementHandle
-        data->sql,   // StatementText
-        SQL_NTS      // TextLength
-      );
+      if (is_utf8_locale()) {            
+        // Assume the application handles UNICODE
+                    
+        Ucs2Str sql = utf8_to_ucs2((char*)data->sql);
+        if (!sql.valid) {
+          SetError((std::string("[node-odbc] Query not accepted: ") + sql.error).c_str());
+          return;
+        }
+        return_code =
+        SQLExecDirectW
+        (
+          data->hstmt,
+          sql.str.get(),
+          sql.length
+        );
+        
+      }
+      else {
+        return_code =
+        SQLExecDirect
+        (
+          data->hstmt,
+          data->sql,
+          SQL_NTS
+        );
+      }
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error calling the procedure\0");
@@ -2054,15 +2285,33 @@ Napi::Value ODBCConnection::GetInfo(const Napi::Env env, const SQLUSMALLINT opti
   SQLSMALLINT infoLength;
   SQLRETURN   return_code;
 
-  return_code = 
-  SQLGetInfo
-  (
-    this->hDBC,        // ConnectionHandle
-    SQL_USER_NAME,     // InfoType
-    infoValue,         // InfoValuePtr
-    sizeof(infoValue), // BufferLength
-    &infoLength        // StringLengthPtr
-  );
+  if (is_utf8_locale()) {
+
+    WCHAR infoValue_ucs2[255];    
+
+    SQLGetInfoW
+    (
+      this->hDBC,        // ConnectionHandle
+      SQL_USER_NAME,     // InfoType
+      infoValue_ucs2,    // InfoValuePtr
+      sizeof(infoValue_ucs2), // BufferLength
+      &infoLength        // StringLengthPtr
+    );
+
+    ucs2_to_utf8((char*)infoValue_ucs2, (char*)infoValue, infoLength);
+    infoLength = strlen((char*)infoValue);
+  }
+  else {
+    return_code = 
+    SQLGetInfo
+    (
+      this->hDBC,        // ConnectionHandle
+      SQL_USER_NAME,     // InfoType
+      infoValue,         // InfoValuePtr
+      sizeof(infoValue), // BufferLength
+      &infoLength        // StringLengthPtr
+    );
+  }
 
   if (SQL_SUCCEEDED(return_code)) {
     #ifdef UNICODE
@@ -2115,17 +2364,64 @@ class PrimaryKeysAsyncWorker : public ODBCAsyncWorker
         1
       );
 
-      return_code =
-      SQLPrimaryKeys
-      (
-        data->hstmt,     // StatementHandle
-        data->catalog,   // CatalogName
-        SQL_NTS,         // NameLength1
-        data->schema,    // SchemaName
-        SQL_NTS,         // NameLength2
-        data->table,     // TableName
-        SQL_NTS          // NameLength3 
-      );
+      if (is_utf8_locale()) {
+
+        bool parameter_check = true;        
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
+        // Catalog
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
+        }        
+
+        // Schema
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
+        }
+
+        // Table
+        Ucs2Str table = utf8_to_ucs2((char*)data->table);
+        if (!table.valid) {
+          ss << "Table name not accepted: " << table.error;
+          parameter_check = false;
+        }
+
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          SQLPrimaryKeysW
+          (
+            data->hstmt,          // StatementHandle
+            catalog.str.get(),    // CatalogName
+            catalog.length,       // CatalogName length
+            schema.str.get(),     // SchemaName
+            schema.length,        // SchemaName length
+            table.str.get(),      // TableName
+            table.length          // TableName length
+          );
+        } else {
+          SetError(ss.str());
+          return;
+        }
+      }
+      else {
+        return_code =
+        SQLPrimaryKeys
+        (
+          data->hstmt,     // StatementHandle
+          data->catalog,   // CatalogName
+          SQL_NTS,         // NameLength1
+          data->schema,    // SchemaName
+          SQL_NTS,         // NameLength2
+          data->table,     // TableName
+          SQL_NTS          // NameLength3 
+        );
+      }
+      
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error getting table information\0");
@@ -2302,23 +2598,100 @@ class ForeignKeysAsyncWorker : public ODBCAsyncWorker
         1
       );
 
-      return_code =
-      SQLForeignKeys
-      (
-        data->hstmt,     // StatementHandle
-        data->catalog,   // PKCatalogName
-        SQL_NTS,         // NameLength1
-        data->schema,    // PKSchemaName
-        SQL_NTS,         // NameLength2
-        data->table,     // PKTableName
-        SQL_NTS,         // NameLength3 
-        data->fkCatalog, // FKCatalogName
-        SQL_NTS,         // NameLength4,  
-        data->fkSchema,   // FKSchemaName
-        SQL_NTS,         // NameLength5,  
-        data->fkTable,   // FKTableName,  
-        SQL_NTS          // NameLength6
-      );
+      if (is_utf8_locale()) {
+
+        bool parameter_check = true;        
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
+        // Catalog
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
+        }        
+
+        // Schema
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
+        }
+
+        // Table
+        Ucs2Str table = utf8_to_ucs2((char*)data->table);
+        if (!table.valid) {
+          ss << "Table name not accepted: " << table.error;
+          parameter_check = false;
+        }
+
+        // fkCatalog
+        Ucs2Str fkCatalog = utf8_to_ucs2((char*)data->fkCatalog);
+        if (!fkCatalog.valid) {
+          ss << "FK catalog name not accepted: " << fkCatalog.error;
+          parameter_check = false;
+        }
+
+        // fkSchema
+        Ucs2Str fkSchema = utf8_to_ucs2((char*)data->fkSchema);
+        if (!fkSchema.valid) {
+          ss << "FK schema name not accepted: " << fkSchema.error;
+          parameter_check = false;
+        }
+
+        // fkTable
+        Ucs2Str fkTable = utf8_to_ucs2((char*)data->fkTable);
+        if (!fkTable.valid) {
+          ss << "FK table name not accepted: " << fkTable.error;
+          parameter_check = false;
+        }
+
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          return_code =
+          SQLForeignKeysW
+          (
+            data->hstmt,        // StatementHandle
+            catalog.str.get(),  // PKCatalogName
+            catalog.length,     // PKCatalogName length
+            schema.str.get(),   // PKSchemaName
+            schema.length,      // PKSchemaName length
+            table.str.get(),    // PKTableName
+            table.length,       // PKTableName length 
+            fkCatalog.str.get(),// FKCatalogName
+            fkCatalog.length,   // FKCatalogName length  
+            fkSchema.str.get(), // FKSchemaName
+            fkSchema.length,    // FKSchemaName length  
+            fkTable.str.get(),  // FKTableName
+            fkTable.length      // FKTableName length
+          );
+
+        } else {
+          SetError(ss.str());
+          return;
+        }
+
+      }
+      else {
+        return_code =
+        SQLForeignKeys
+        (
+          data->hstmt,     // StatementHandle
+          data->catalog,   // PKCatalogName
+          SQL_NTS,         // NameLength1
+          data->schema,    // PKSchemaName
+          SQL_NTS,         // NameLength2
+          data->table,     // PKTableName
+          SQL_NTS,         // NameLength3 
+          data->fkCatalog, // FKCatalogName
+          SQL_NTS,         // NameLength4,  
+          data->fkSchema,   // FKSchemaName
+          SQL_NTS,         // NameLength5,  
+          data->fkTable,   // FKTableName,  
+          SQL_NTS          // NameLength6
+        );
+      }
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error getting table information\0");
@@ -2522,19 +2895,75 @@ class TablesAsyncWorker : public ODBCAsyncWorker {
         1
       );
 
-      return_code =
-      SQLTables
-      (
-        data->hstmt,   // StatementHandle
-        data->catalog, // CatalogName
-        SQL_NTS,       // NameLength1
-        data->schema,  // SchemaName
-        SQL_NTS,       // NameLength2
-        data->table,   // TableName
-        SQL_NTS,       // NameLength3
-        data->type,    // TableType
-        SQL_NTS        // NameLength4
-      );
+      if (is_utf8_locale()) {
+
+        bool parameter_check = true;        
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
+        // Catalog
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
+        }        
+
+        // Schema
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
+        }
+
+        // Table
+        Ucs2Str table = utf8_to_ucs2((char*)data->table);
+        if (!table.valid) {
+          ss << "Table name not accepted: " << table.error;
+          parameter_check = false;
+        }
+
+        // Table type
+        Ucs2Str table_type = utf8_to_ucs2((char*)data->type);
+        if (!table_type.valid) {
+          ss << "Table type name not accepted: " << table_type.error;
+          parameter_check = false;
+        }
+
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          SQLTablesW
+          (
+            data->hstmt,          // StatementHandle
+            catalog.str.get(),    // CatalogName
+            catalog.length,       // CatalogName length
+            schema.str.get(),     // SchemaName
+            schema.length,        // SchemaName length
+            table.str.get(),      // TableName
+            table.length,         // TableName length
+            table_type.str.get(), // TableType
+            table_type.length     // TableType length
+          );
+        } else {
+          SetError(ss.str());
+          return;
+        }
+      }
+      else {
+        return_code =
+        SQLTables
+        (
+          data->hstmt,   // StatementHandle
+          data->catalog, // CatalogName
+          SQL_NTS,       // NameLength1
+          data->schema,  // SchemaName
+          SQL_NTS,       // NameLength2
+          data->table,   // TableName
+          SQL_NTS,       // NameLength3
+          data->type,    // TableType
+          SQL_NTS        // NameLength4
+        );
+      }
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error getting table information\0");
@@ -2726,19 +3155,76 @@ class ColumnsAsyncWorker : public ODBCAsyncWorker {
         1
       );
 
-      return_code =
-      SQLColumns
-      (
-        data->hstmt,   // StatementHandle
-        data->catalog, // CatalogName
-        SQL_NTS,       // NameLength1
-        data->schema,  // SchemaName
-        SQL_NTS,       // NameLength2
-        data->table,   // TableName
-        SQL_NTS,       // NameLength3
-        data->column,  // ColumnName
-        SQL_NTS        // NameLength4
-      );
+      if (is_utf8_locale()) {
+
+        bool parameter_check = true;        
+        std::stringstream ss;
+        ss << "[node-odbc] ";
+
+        // Catalog
+        Ucs2Str catalog = utf8_to_ucs2((char*)data->catalog);
+        if (!catalog.valid) {
+          ss << "Catalog name not accepted: " << catalog.error;
+          parameter_check = false;
+        }        
+
+        // Schema
+        Ucs2Str schema = utf8_to_ucs2((char*)data->schema);
+        if (!schema.valid) {
+          ss << "Schema name not accepted: " << schema.error;
+          parameter_check = false;
+        }
+
+        // Table
+        Ucs2Str table = utf8_to_ucs2((char*)data->table);
+        if (!table.valid) {
+          ss << "Table name not accepted: " << table.error;
+          parameter_check = false;
+        }
+
+        // Column
+        Ucs2Str column = utf8_to_ucs2((char*)data->column);
+        if (!column.valid) {
+          ss << "Column name not accepted: " << column.error;
+          parameter_check = false;
+        }
+
+        if (parameter_check){
+          // Names and lengths are in WCHAR
+          SQLColumnsW
+          (
+            data->hstmt,        // StatementHandle
+            catalog.str.get(),  // CatalogName
+            catalog.length,     // CatalogName length
+            schema.str.get(),   // SchemaName
+            schema.length,      // SchemaName length
+            table.str.get(),    // TableName
+            table.length,       // TableName length
+            column.str.get(),   // ColumnName
+            column.length       // ColumnName length
+          );
+        } else {
+          SetError(ss.str());
+          return;
+        }
+
+      }
+      else {
+        return_code =
+        SQLColumns
+        (
+          data->hstmt,   // StatementHandle
+          data->catalog, // CatalogName
+          SQL_NTS,       // NameLength1
+          data->schema,  // SchemaName
+          SQL_NTS,       // NameLength2
+          data->table,   // TableName
+          SQL_NTS,       // NameLength3
+          data->column,  // ColumnName
+          SQL_NTS        // NameLength4
+        );
+      }
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error getting column information\0");
@@ -3117,6 +3603,7 @@ Napi::Value ODBCConnection::Rollback(const Napi::CallbackInfo &info) {
   return env.Undefined();
 }
 
+//--------------------------------------------------------------------------
 SQLRETURN
 prepare_for_fetch
 (
@@ -3151,7 +3638,7 @@ prepare_for_fetch
   return return_code;
 }
 
-
+//--------------------------------------------------------------------------
 SQLRETURN
 bind_buffers
 (
@@ -3198,18 +3685,40 @@ bind_buffers
     SQLINTEGER  nativeError;
     SQLTCHAR    errorMessage[ERROR_MESSAGE_BUFFER_BYTES];
 
-    diagnostic_return_code =
-    SQLGetDiagRec
-    (
-      SQL_HANDLE_STMT,            // HandleType
-      data->hstmt,                // Handle
-      1,                          // RecNumber
-      errorSQLState,              // SQLState
-      &nativeError,               // NativeErrorPtr
-      errorMessage,               // MessageText
-      ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
-      &textLength                 // TextLengthPtr
-    );
+    if (is_utf8_locale()) {
+
+      WCHAR state_ucs2[SQL_SQLSTATE_SIZE + 1];    
+      WCHAR message_ucs2[ERROR_MESSAGE_BUFFER_CHARS];      
+
+      diagnostic_return_code = SQLGetDiagRecW (
+        SQL_HANDLE_STMT,            // HandleType
+        data->hstmt,                // Handle
+        1,                          // RecNumber
+        state_ucs2,                 // SQLState
+        &nativeError,               // NativeErrorPtr
+        message_ucs2,               // MessageText
+        ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
+        &textLength                 // TextLengthPtr
+      );
+
+      ucs2_to_utf8((char*)state_ucs2, (char*)errorSQLState, SQL_SQLSTATE_SIZE + 1);
+      ucs2_to_utf8((char*)message_ucs2, (char*)errorMessage, textLength);
+      textLength = strlen((char*)errorMessage);
+    }
+    else {
+      diagnostic_return_code =
+      SQLGetDiagRec
+      (
+        SQL_HANDLE_STMT,            // HandleType
+        data->hstmt,                // Handle
+        1,                          // RecNumber
+        errorSQLState,              // SQLState
+        &nativeError,               // NativeErrorPtr
+        errorMessage,               // MessageText
+        ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
+        &textLength                 // TextLengthPtr
+      );
+    }
 
     // Couldn't even get the diagnostic information! Something is wrong beyond
     // driver support for the SQLSetStmtAttr call, return the return_code
@@ -3255,18 +3764,40 @@ bind_buffers
       SQLINTEGER  nativeError;
       SQLTCHAR    errorMessage[ERROR_MESSAGE_BUFFER_BYTES];
 
-      diagnostic_return_code =
-      SQLGetDiagRec
-      (
-        SQL_HANDLE_STMT,            // HandleType
-        data->hstmt,                // Handle
-        1,                          // RecNumber
-        errorSQLState,              // SQLState
-        &nativeError,               // NativeErrorPtr
-        errorMessage,               // MessageText
-        ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
-        &textLength                 // TextLengthPtr
-      );
+      if (is_utf8_locale()) {
+
+        WCHAR state_ucs2[SQL_SQLSTATE_SIZE + 1];    
+        WCHAR message_ucs2[ERROR_MESSAGE_BUFFER_CHARS];      
+
+        diagnostic_return_code = SQLGetDiagRecW (
+          SQL_HANDLE_STMT,            // HandleType
+          data->hstmt,                // Handle
+          1,                          // RecNumber
+          state_ucs2,                 // SQLState
+          &nativeError,               // NativeErrorPtr
+          message_ucs2,               // MessageText
+          ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
+          &textLength                 // TextLengthPtr
+        );
+
+        ucs2_to_utf8((char*)state_ucs2, (char*)errorSQLState, SQL_SQLSTATE_SIZE + 1);
+        ucs2_to_utf8((char*)message_ucs2, (char*)errorMessage, textLength);
+        textLength = strlen((char*)errorMessage);
+      }
+      else {
+        diagnostic_return_code =
+        SQLGetDiagRec
+        (
+          SQL_HANDLE_STMT,            // HandleType
+          data->hstmt,                // Handle
+          1,                          // RecNumber
+          errorSQLState,              // SQLState
+          &nativeError,               // NativeErrorPtr
+          errorMessage,               // MessageText
+          ERROR_MESSAGE_BUFFER_CHARS, // BufferLength
+          &textLength                 // TextLengthPtr
+        );
+      }
 
       if (!SQL_SUCCEEDED(diagnostic_return_code))
       {
@@ -3289,26 +3820,50 @@ bind_buffers
   for (int i = 0; i < data->column_count; i++)
   {
     Column *column = new Column();
-    column->ColumnName = new SQLTCHAR[data->maxColumnNameLength + 1]();
+    // Need to reserve enough memory for the wost case
+    column->ColumnName = new SQLTCHAR[(data->maxColumnNameLength)*2 + 1]();
 
     // TODO: Could just allocate one large SQLLEN buffer that was of size
     // column_count * fetch_size, then just do the pointer arithmetic for it..
     data->bound_columns[i].length_or_indicator_array =
       new SQLLEN[data->fetch_size]();
 
-    return_code = 
-    SQLDescribeCol
-    (
-      data->hstmt,                   // StatementHandle
-      i + 1,                         // ColumnNumber
-      column->ColumnName,            // ColumnName
-      data->maxColumnNameLength + 1, // BufferLength
-      &column->NameLength,           // NameLengthPtr
-      &column->DataType,             // DataTypePtr
-      &column->ColumnSize,           // ColumnSizePtr
-      &column->DecimalDigits,        // DecimalDigitsPtr
-      &column->Nullable              // NullablePtr
-    );
+    if (is_utf8_locale()) {
+
+      WCHAR column_ucs2[data->maxColumnNameLength];    
+
+      return_code =
+      SQLDescribeColW
+      (
+        data->hstmt,                   // StatementHandle
+        i + 1,                         // ColumnNumber
+        column_ucs2,                   // ColumnName (UCS-2LE)
+        data->maxColumnNameLength,     // BufferLength
+        &column->NameLength,           // NameLengthPtr
+        &column->DataType,             // DataTypePtr
+        &column->ColumnSize,           // ColumnSizePtr
+        &column->DecimalDigits,        // DecimalDigitsPtr
+        &column->Nullable              // NullablePtr
+      );
+
+      ucs2_to_utf8((char*)column_ucs2, (char*)column->ColumnName, column->NameLength);
+    }
+    else {
+      return_code = 
+      SQLDescribeCol
+      (
+        data->hstmt,                   // StatementHandle
+        i + 1,                         // ColumnNumber
+        column->ColumnName,            // ColumnName
+        data->maxColumnNameLength + 1, // BufferLength (+1 for the 0 terminator)
+        &column->NameLength,           // NameLengthPtr
+        &column->DataType,             // DataTypePtr
+        &column->ColumnSize,           // ColumnSizePtr
+        &column->DecimalDigits,        // DecimalDigitsPtr
+        &column->Nullable              // NullablePtr
+      );
+    }
+
     if (!SQL_SUCCEEDED(return_code)) {
       return return_code;
     }
@@ -3511,7 +4066,7 @@ bind_buffers
   }
   return return_code;
 }
-
+//--------------------------------------------------------------------------
 SQLRETURN
 fetch_and_store
 (
@@ -3953,6 +4508,7 @@ fetch_and_store
   return return_code;
 }
 
+//--------------------------------------------------------------------------
 SQLRETURN
 fetch_all_and_store
 (
@@ -3992,6 +4548,7 @@ fetch_all_and_store
   return return_code;
 }
 
+//--------------------------------------------------------------------------
 // All of data has been loaded into data->storedRows. Have to take the data
 // stored in there and convert it it into JavaScript to be given to the
 // Node.js runtime.

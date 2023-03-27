@@ -23,6 +23,7 @@
 #include "odbc_connection.h"
 #include "odbc_statement.h"
 #include "odbc_cursor.h"
+#include "utils.h"
 
 Napi::FunctionReference ODBCStatement::constructor;
 
@@ -111,12 +112,29 @@ class PrepareAsyncWorker : public ODBCAsyncWorker {
 
       SQLRETURN return_code;
 
-      return_code = SQLPrepare
-      (
-        data->hstmt, // StatementHandle
-        data->sql,   // StatementText
-        SQL_NTS      // TextLength
-      );
+      if (is_utf8_locale()) {            
+        // Assume the application handles UNICODE
+
+        Ucs2Str sql = utf8_to_ucs2((char*)data->sql);
+        if (!sql.valid) {
+          SetError((std::string("[node-odbc] Query not accepted: ") + sql.error).c_str());
+          return;
+        }
+        return_code =  SQLPrepareW (
+          data->hstmt,
+          sql.str.get(),
+          sql.length
+        );
+      }
+      else {
+        return_code = SQLPrepare
+        (
+          data->hstmt, // StatementHandle
+          data->sql,   // StatementText
+          SQL_NTS      // TextLength
+        );
+      }
+
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);
         SetError("[odbc] Error preparing the statement\0");
@@ -382,13 +400,30 @@ class ExecuteAsyncWorker : public ODBCAsyncWorker {
         {
           if (data->query_options.cursor_name != NULL)
           {
-            return_code =
-            SQLSetCursorName
-            (
-              data->hstmt,
-              data->query_options.cursor_name,
-              data->query_options.cursor_name_length
-            );
+            if (is_utf8_locale()) {            
+              // Assume the application handles UNICODE
+                          
+              Ucs2Str cursor_name = utf8_to_ucs2((char*)data->query_options.cursor_name);
+              if (!cursor_name.valid) {
+                SetError((std::string("[node-odbc] Cursor name not accepted: ") + cursor_name.error).c_str());
+                return;
+              }
+              return_code = SQLSetCursorNameW (
+                data->hstmt,
+                cursor_name.str.get(),
+                cursor_name.length
+              );
+              
+            }
+            else {
+              return_code =
+              SQLSetCursorName
+              (
+                data->hstmt,
+                data->query_options.cursor_name,
+                SQL_NTS
+              );
+            }
 
             if (!SQL_SUCCEEDED(return_code)) {
               this->errors = GetODBCErrors(SQL_HANDLE_STMT, data->hstmt);

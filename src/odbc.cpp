@@ -23,6 +23,7 @@
 #include "odbc_connection.h"
 #include "odbc_statement.h"
 #include "odbc_cursor.h"
+#include "utils.h"
 
 #ifdef dynodbc
 #include "dynodbc.h"
@@ -183,9 +184,9 @@ void ODBCAsyncWorker::OnError(const Napi::Error &e) {
     (
       Napi::String::New(env, STATE),
       #ifdef UNICODE
-      Napi::String::New(env, (odbcError.state != NULL) ? (const char16_t*)odbcError.state : (const char16_t*)L"")
+      Napi::String::New(env, (odbcError.state[0] != NO_STATE_TEXT) ? (const char16_t*)odbcError.state : (const char16_t*)L"")
       #else
-      Napi::String::New(env, (odbcError.state != NULL) ? (const char*)odbcError.state : "")
+      Napi::String::New(env, (odbcError.state[0] != NO_STATE_TEXT) ? (const char*)odbcError.state : "")
       #endif
     );
 
@@ -277,18 +278,40 @@ ODBCError* ODBCAsyncWorker::GetODBCErrors
     {
       error.message = new SQLTCHAR[error_message_length];
 
-      return_code =
-      SQLGetDiagRec
-      (
-        handleType,                // HandleType
-        handle,                    // Handle
-        i + 1,                     // RecNumber
-        error.state,               // SQLState
-        &error.code,               // NativeErrorPtr
-        error.message,             // MessageText
-        error_message_length,      // BufferLength
-        &new_error_message_length  // TextLengthPtr
-      );
+      if (is_utf8_locale()) {
+
+        WCHAR state_ucs2[SQL_SQLSTATE_SIZE + 1];
+        WCHAR message_ucs2[error_message_length];        
+        
+        return_code = SQLGetDiagRecW (
+          handleType,                // HandleType
+          handle,                    // Handle
+          i + 1,                     // RecNumber
+          state_ucs2,                // SQLState
+          &error.code,               // NativeErrorPtr
+          message_ucs2,              // MessageText
+          error_message_length,      // BufferLength
+          &new_error_message_length  // TextLengthPtr
+        );
+
+        ucs2_to_utf8((char*)state_ucs2, (char*)error.state, 6);
+        ucs2_to_utf8((char*)message_ucs2, (char*)error.message, new_error_message_length);
+        new_error_message_length = strlen((char*)error.message);
+      }
+      else {
+        return_code =
+        SQLGetDiagRec
+        (
+          handleType,                // HandleType
+          handle,                    // Handle
+          i + 1,                     // RecNumber
+          error.state,               // SQLState
+          &error.code,               // NativeErrorPtr
+          error.message,             // MessageText
+          error_message_length,      // BufferLength
+          &new_error_message_length  // TextLengthPtr
+        );
+      }
 
       if (error_message_length > new_error_message_length)
       {
@@ -406,18 +429,44 @@ class ConnectAsyncWorker : public ODBCAsyncWorker {
       }
 
       //Attempt to connect
-      return_code =
-      SQLDriverConnect
-      (
-        hDBC,                // ConnectionHandle
-        NULL,                // WindowHandle
-        connectionStringPtr, // InConnectionString
-        SQL_NTS,             // StringLength1
-        NULL,                // OutConnectionString
-        0,                   // BufferLength - in characters
-        NULL,                // StringLength2Ptr
-        SQL_DRIVER_NOPROMPT  // DriverCompletion
-      );
+      if (is_utf8_locale()) {            
+        // Assume the application handles UNICODE
+                    
+        Ucs2Str connectionString = utf8_to_ucs2((char*)connectionStringPtr);
+        if (!connectionString.valid) {
+          SetError((std::string("[node-odbc] Connection string not accepted: ") + connectionString.error).c_str());
+          return_code = -1;
+        }
+        else {
+          return_code =
+          SQLDriverConnectW
+          (
+            hDBC,                // ConnectionHandle
+            NULL,                // WindowHandle
+            connectionString.str.get(), // InConnectionString
+            connectionString.length,    // StringLength1
+            NULL,                // OutConnectionString
+            0,                   // BufferLength - in characters
+            NULL,                // StringLength2Ptr
+            SQL_DRIVER_NOPROMPT  // DriverCompletion
+          );
+        }     
+      }
+      else {
+        return_code =
+        SQLDriverConnect
+        (
+          hDBC,                // ConnectionHandle
+          NULL,                // WindowHandle
+          connectionStringPtr, // InConnectionString
+          SQL_NTS,             // StringLength1
+          NULL,                // OutConnectionString
+          0,                   // BufferLength - in characters
+          NULL,                // StringLength2Ptr
+          SQL_DRIVER_NOPROMPT  // DriverCompletion
+        );
+      }
+
       uv_mutex_unlock(&ODBC::g_odbcMutex);
       if (!SQL_SUCCEEDED(return_code)) {
         this->errors = GetODBCErrors(SQL_HANDLE_DBC, hDBC);
