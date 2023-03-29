@@ -1,7 +1,7 @@
 {
   'targets' : [
     {
-      'target_name' : 'odbc',
+      'target_name' : 'uodbc',
       'sources' : [
         'src/odbc.cpp',
         'src/odbc_connection.cpp',
